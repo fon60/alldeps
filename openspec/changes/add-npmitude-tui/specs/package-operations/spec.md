@@ -37,20 +37,24 @@ When the user requests applying pending changes, the system SHALL first display 
 - **WHEN** the user declines the plan summary
 - **THEN** no npm operation runs and all marks remain pending
 
-### Requirement: Execution via raw passthrough
-The system SHALL execute an approved plan by invoking the selected environment's own package manager for global install, uninstall, or update operations. The plan compiles to batched invocations grouped by operation kind. During execution the interface is suspended and each invocation's output streams directly to the terminal unfiltered; the system MUST NOT parse that output for correctness. If an invocation fails, remaining invocations are not started. Interrupting a running invocation aborts it and the remainder of the plan. On completion (success, failure, or interruption) the system SHALL prompt the user to either return to the interface (triggering the post-apply state re-read) or quit the application. Applying another plan MUST be blocked until the current run finishes.
+#### Scenario: Quick apply with g,g
+- **WHEN** the user presses g on the list (opening the plan preview) and then presses g again on the plan screen
+- **THEN** the plan is confirmed and execution begins without any other input
+
+### Requirement: Apply progress screen
+The system SHALL execute an approved plan by invoking the selected environment's own package manager for global install, uninstall, or update operations. The plan compiles to batched invocations grouped by operation kind. During execution the interface stays up and a dedicated full-screen view replaces the list: each invocation is shown as its command line followed by its raw combined output (stdout and stderr unfiltered, in order), auto-scrolled so the newest output is visible; the system MUST NOT parse that output for correctness. A bottom line SHALL always state what is happening or what to do next: while a batch runs, which step of how many is executing with its command; after the last batch, that the list is being re-read from disk; on completion (success or failure), the prompt to return to the interface or quit. If an invocation fails, remaining invocations are not started and its error is recorded in the log. Pressing ctrl+c while a batch runs SHALL abort that invocation and the remainder of the plan. Applying another plan MUST be blocked until the current run finishes; all other keys are ignored while the apply screen is up.
 
 #### Scenario: Successful install
 - **WHEN** the user confirms a plan installing one package
-- **THEN** the interface suspends, the package manager's raw output streams to the terminal, and on completion the prompt offers return or quit; returning refreshes the list from disk showing the package installed
+- **THEN** the apply screen shows the command line and the package manager's raw output as it runs, then a completion view with the prompt to return or quit; returning shows the refreshed list with the package installed
 
 #### Scenario: Failure stops the remaining plan
 - **WHEN** the first invocation of a multi-invocation plan fails (e.g. network error during download)
-- **THEN** the remaining invocations are not started, the diagnostics remain visible in the terminal, and returning refreshes the list from actual on-disk state
+- **THEN** the error is recorded in the apply screen's log, the remaining invocations are not started, and returning refreshes the list from actual on-disk state
 
 #### Scenario: Interruption
-- **WHEN** the user interrupts a running invocation
-- **THEN** the invocation is terminated, the remainder of the plan is aborted, and the completion prompt is still offered so the user can read what happened before returning
+- **WHEN** the user presses ctrl+c while a batch is running
+- **THEN** the invocation is terminated, its error is recorded in the log, the remainder of the plan is aborted, and the completion prompt is still offered so the user can read what happened before returning
 
 ### Requirement: Post-apply truth from disk
 After any apply run, the system SHALL re-read the actual installed state of the prefix rather than assuming the plan succeeded in full, and update the list accordingly.
@@ -60,11 +64,11 @@ After any apply run, the system SHALL re-read the actual installed state of the 
 - **THEN** the list shows the successful operation's effect and retains the failed package in its pre-operation state
 
 ### Requirement: Concurrency guard
-While a plan is executing, further apply requests SHALL be rejected with a notice; pending marks MAY still be edited.
+While a plan is executing, the apply screen SHALL accept no input other than ctrl+c (which aborts the running invocation). No second apply run MAY start until the current run finishes.
 
-#### Scenario: Double apply attempt
-- **WHEN** the user requests apply while another plan is still running
-- **THEN** the request is refused with a notice that an operation is in progress
+#### Scenario: Keys ignored during execution
+- **WHEN** the user presses any key — including another apply request — while a plan is still running
+- **THEN** nothing happens, except that ctrl+c aborts the running invocation
 
 ### Requirement: Permission failure reporting
 If npm fails because the selected prefix is not writable by the current user, the system SHALL display a clear, actionable message identifying the permission problem and how to proceed (e.g. re-running with elevated privileges), rather than only raw npm error output.

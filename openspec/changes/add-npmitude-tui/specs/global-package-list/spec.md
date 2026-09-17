@@ -75,11 +75,29 @@ The user SHALL be able to initiate a transient name match that, while active, na
 - **THEN** the full list (subject to any persistent filter) is restored
 
 ### Requirement: Sorting
-The list SHALL be sortable by name (default), version, size, and state flag, with the active sort visible to the user.
+The local package list SHALL be sortable by name (default), version, size, and state flag, with the active sort visible to the user. The sort applies only to the local list; registry search results keep their own ordering (see the registry-search spec).
 
 #### Scenario: Sort by version
 - **WHEN** the user selects version sorting
 - **THEN** rows are ordered by package version ascending
+
+### Requirement: Cursor row highlighting
+The row under the cursor SHALL be visually distinguished across its full width (all columns), not only in individual cells.
+
+#### Scenario: Full-row selection
+- **WHEN** the user moves the cursor to a row, whether or not that row has a candidate version
+- **THEN** the entire row from the first to the last column is highlighted as one contiguous region
+
+### Requirement: Viewport scrolling
+When the visible list exceeds the number of rows that fit on screen, the list viewport SHALL follow the cursor: moving the cursor past the bottom edge scrolls the list down, and moving it back above the top edge scrolls it up. The cursor row MUST always be visible.
+
+#### Scenario: Scrolling down follows the cursor
+- **WHEN** 30 rows are visible on a screen that fits 17 rows and the user moves the cursor to row 20
+- **THEN** the viewport has scrolled so that row 20 (the cursor row) is visible near the bottom edge
+
+#### Scenario: Scrolling back up follows the cursor
+- **WHEN** the viewport is scrolled down and the user moves the cursor above the currently visible range
+- **THEN** the viewport scrolls up so the cursor row is visible again
 
 ### Requirement: Status line
 The UI SHALL persistently display the selected prefix path, the active filter expression, the number of visible packages, and the count of pending marks.
