@@ -1,34 +1,29 @@
 package app
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"npmitude/internal/registry"
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 )
 
 func ptr[T any](v T) *T { return &v }
 
-func writeTestPkg(t *testing.T, dir, name, pkgJSON string) {
-	t.Helper()
-	pkgdir := filepath.Join(dir, "lib", "node_modules", name)
-	if err := os.MkdirAll(pkgdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if pkgJSON != "" {
-		if err := os.WriteFile(filepath.Join(pkgdir, "package.json"), []byte(pkgJSON), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 func TestInfoScreenInstalledUsesLocalDoc(t *testing.T) {
-	dir := t.TempDir()
-	writeTestPkg(t, dir, "foo", `{"name":"foo","description":"A test pkg","license":{"type":"MIT"},"bin":"cli.js","dependencies":{"bar":"^1.0.0"},"peerDependencies":{"baz":"*"}}`)
-	m := modelWithLoadedPrefix(t, dir, "foo")
+	s := newStubEco()
+	s.docs = map[string]*ecosystem.Doc{
+		"foo": {
+			Name:             "foo",
+			Description:      "A test pkg",
+			License:          "MIT",
+			Bin:              map[string]string{"foo": "cli.js"},
+			Dependencies:     map[string]string{"bar": "^1.0.0"},
+			PeerDependencies: map[string]string{"baz": "*"},
+		},
+	}
+	m := modelWithLoadedPrefix(t, "/p", "foo")
+	m.eco = s
 
 	nextRaw, cmd := m.Update(keyMsg(t, "enter"))
 	if cmd == nil {
@@ -63,7 +58,7 @@ func TestInfoScreenInstalledUsesLocalDoc(t *testing.T) {
 func TestInfoScreenOfflineNotInstalledShowsNotice(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "ghost")
 	m.state.Prefixes["/p"].Packages["ghost"].InstalledVersion = ""
-	m.state.Prefixes["/p"].Packages["ghost"].Origin = state.OriginSearch
+	m.state.Prefixes["/p"].Packages["ghost"].Origin = domain.OriginSearch
 
 	_, cmd := m.Update(keyMsg(t, "d"))
 	m2 := m.step(t, keyMsg(t, "d"))
@@ -84,17 +79,17 @@ func TestInfoScreenOfflineNotInstalledShowsNotice(t *testing.T) {
 func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
 	m.state.Prefixes["/p"].Packages["beta"].InstalledVersion = ""
-	m.state.Prefixes["/p"].Packages["beta"].Origin = state.OriginSearch
+	m.state.Prefixes["/p"].Packages["beta"].Origin = domain.OriginSearch
 
 	m.screen = ScreenInfo
 	m.infoName = "alpha"
-	m.infoDoc = &registry.Doc{Name: "alpha", Versions: []string{"2.0.0", "1.5.0", "1.0.0"}, Latest: "2.0.0"}
+	m.infoDoc = &ecosystem.Doc{Name: "alpha", Versions: []string{"2.0.0", "1.5.0", "1.0.0"}, Latest: "2.0.0"}
 	m.screen = ScreenVersions
 	m.verCursor = 1 // 1.5.0
 
 	m = m.step(t, keyMsg(t, "enter"))
 	a := m.state.Prefixes["/p"].Packages["alpha"]
-	if a.Mark != state.MarkUpgrade || a.TargetVersion != "1.5.0" {
+	if a.Mark != domain.MarkUpgrade || a.TargetVersion != "1.5.0" {
 		t.Fatalf("installed pin: mark=%v target=%q", a.Mark, a.TargetVersion)
 	}
 	if m.screen != ScreenInfo {
@@ -106,14 +101,14 @@ func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 	m.verCursor = 0 // 2.0.0
 	m = m.step(t, keyMsg(t, "enter"))
 	b := m.state.Prefixes["/p"].Packages["beta"]
-	if b.Mark != state.MarkInstall || b.TargetVersion != "2.0.0" {
+	if b.Mark != domain.MarkInstall || b.TargetVersion != "2.0.0" {
 		t.Fatalf("not-installed pin: mark=%v target=%q", b.Mark, b.TargetVersion)
 	}
 }
 
 func TestQuitConfirmationProtectsMarks(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.state.SetMark("/p", "alpha", state.MarkRemove)
+	m.state.SetMark("/p", "alpha", domain.MarkRemove)
 
 	m = m.step(t, keyMsg(t, "q"))
 	if !m.quitConfirm {
@@ -156,10 +151,19 @@ func TestMarkdownToText(t *testing.T) {
 }
 
 func TestInfoViewRendersFieldsAndAbsence(t *testing.T) {
-	dir := t.TempDir()
-	writeTestPkg(t, dir, "foo", `{"name":"foo","license":{"type":"MIT"},"bin":{"foo":"cli.js","bar":"other.js"},"dependencies":{"dep-a":"^1.0.0"},"peerDependencies":{"peer-b":"*"}}`)
-	m := modelWithLoadedPrefix(t, dir, "foo")
-	m.state.Prefixes[dir].Packages["foo"].SizeBytes = ptr(int64(2048))
+	s := newStubEco()
+	s.docs = map[string]*ecosystem.Doc{
+		"foo": {
+			Name:             "foo",
+			License:          "MIT",
+			Bin:              map[string]string{"foo": "cli.js", "bar": "other.js"},
+			Dependencies:     map[string]string{"dep-a": "^1.0.0"},
+			PeerDependencies: map[string]string{"peer-b": "*"},
+		},
+	}
+	m := modelWithLoadedPrefix(t, "/p", "foo")
+	m.eco = s
+	m.state.Prefixes["/p"].Packages["foo"].SizeBytes = ptr(int64(2048))
 
 	nextRaw, cmd := m.Update(keyMsg(t, "enter"))
 	m = nextRaw.(Model)
@@ -189,12 +193,10 @@ func TestInfoViewRendersFieldsAndAbsence(t *testing.T) {
 }
 
 func TestReadmeViewLocalAndAbsent(t *testing.T) {
-	dir := t.TempDir()
-	writeTestPkg(t, dir, "foo", `{"name":"foo"}`)
-	if err := os.WriteFile(filepath.Join(dir, "lib", "node_modules", "foo", "README.md"), []byte("# foo\nreadme body"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m := modelWithLoadedPrefix(t, dir, "foo")
+	s := newStubEco()
+	s.readmes = map[string]string{"foo": "# foo\nreadme body"}
+	m := modelWithLoadedPrefix(t, "/p", "foo")
+	m.eco = s
 	m.screen = ScreenInfo
 	m.infoName = "foo"
 
@@ -207,14 +209,19 @@ func TestReadmeViewLocalAndAbsent(t *testing.T) {
 		t.Fatalf("readme lines = %q", joined)
 	}
 
-	m2 := modelWithLoadedPrefix(t, dir, "bar")
-	writeTestPkg(t, dir, "bar", `{"name":"bar"}`) // no README file
+	m2 := modelWithLoadedPrefix(t, "/p", "bar")
 	m2.screen = ScreenInfo
 	m2.infoName = "bar"
-	m2.state.Prefixes[dir].Packages["bar"].InstalledVersion = ""
-	m2.state.Prefixes[dir].Packages["bar"].Origin = state.OriginSearch
-	// no registry configured -> straight to the absent notice
-	m2 = m2.step(t, keyMsg(t, "C"))
+	m2.state.Prefixes["/p"].Packages["bar"].InstalledVersion = ""
+	m2.state.Prefixes["/p"].Packages["bar"].Origin = domain.OriginSearch
+	// no registry configured -> the fetch fails with ErrNoRegistry and lands
+	// on the absent notice
+	nextRaw, cmd := m2.Update(keyMsg(t, "C"))
+	if cmd == nil {
+		t.Fatal("opening the readme for an uninstalled package must start a fetch")
+	}
+	m2 = nextRaw.(Model)
+	m2 = m2.step(t, cmd())
 	if !strings.Contains(strings.Join(m2.readmeLines, "\n"), "no README available") {
 		t.Fatalf("readme lines = %q, want absent notice", m2.readmeLines)
 	}

@@ -8,7 +8,7 @@
 
 - Build: `./build.sh` → static binary at repo root `./npmitude` (CGO_ENABLED=0, -trimpath, stripped)
 - Test all: `go test ./...`
-- Test one package: `go test ./internal/state/`
+- Test one package: `go test ./internal/domain/`
 - Run: `./npmitude` (rebuild with `./build.sh` first — a stale binary causes confusing "changes not visible" bugs)
 - Toolchain: Go 1.27.1; deps pinned in go.mod (bubbletea v1.3.10, lipgloss v1.1.0, bubbles v1.0.0)
 
@@ -22,7 +22,9 @@ test/
 internal/
   app/                  Bubble Tea model: model.go (state+cmds), update.go (key routing), view.go (rendering)
                         screens: list, picker, plan, info, versions, readme; quit-confirm + hint bar
-  state/                AppState / PrefixState / PkgState, marks, sorting (CompareVersions, SortRows, SortVersions)
+  domain/               AppState / PrefixState / PkgState, marks, sorting (CompareVersions, SortRows, SortVersions), plan invariant; imports nothing under adapter/ or TUI pkgs
+  ecosystem/            Ecosystem port (Discover, ListInstalled, Search, Resolve, Execute, Lock, DetectProject, Capabilities) + Intent/Plan/Conflict/ResolutionOption/Environment/Hit/Caps types
+  adapter/              npm/ — the concrete Ecosystem impl delegating to npmcmd/registry/prefix/sizes; owns op-verb + layout strings
   npmcmd/               runs `npm ls -g --all --json` per prefix, parses tree, GetRegistry, LocalDoc, Readme
   registry/             HTTP client: dist-tags, outdated checks (TTL cache), search, full Doc (GetDoc)
   filter/               filter expression parser (~i ~u ~b ~n <regex>, ! & |, parens)
@@ -30,6 +32,7 @@ internal/
   sizes/                background disk-size measurement (hardlink-deduped)
   lock/                 session-scoped exclusive per-environment lock ($XDG_STATE_HOME/npmitude/locks)
 openspec/               specs + changes (active change: openspec/changes/<name>/tasks.md)
+tmp/                    local temporary directory to be used instead of system tmp
 ```
 
 Tests are co-located (`_test.go` in the same package/directory). The root `package.json` exists only for the OpenSpec CLI — it is not part of the Go app.
@@ -40,8 +43,8 @@ The app is interactive; verify behavior through a pty with piped keystrokes:
 
 ```bash
 ./build.sh >/dev/null
-{ sleep 3; printf 'q'; sleep 0.5; } | script -qec "stty cols 80 rows 24; ./npmitude" /dev/null > /tmp/out.txt 2>&1
-sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' /tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
+{ sleep 3; printf 'q'; sleep 0.5; } | script -qec "stty cols 80 rows 24; ./npmitude" /dev/null > ./tmp/out.txt 2>&1
+sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' ./tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 ```
 
 - Target terminal size is **80x24** — all layouts must fit it (status line format: `%d/%d packages, %d pending  sort:%s  f:%s  <tilde-path>`).
@@ -58,7 +61,7 @@ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' /tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 
 ## Critical Gotchas (learned the hard way)
 
-- `Model.Update` has a **value receiver**: unit tests MUST reassign the returned model after every `Update` call (see the `m.step(t, msg)` helper pattern in `internal/app/*_test.go`). Mutations via the shared `*state.AppState` pointer are visible regardless; Model field changes (prompt/screen/cursor) are not.
+- `Model.Update` has a **value receiver**: unit tests MUST reassign the returned model after every `Update` call (see the `m.step(t, msg)` helper pattern in `internal/app/*_test.go`). Mutations via the shared `*domain.AppState` pointer are visible regardless; Model field changes (prompt/screen/cursor) are not.
 - Prefix-scoped npm invocation: `<prefix>/bin/node <prefix>/lib/node_modules/npm/bin/npm-cli.js ls -g --all --json`. npm resolves `execPath` symlinks, so real prefix binaries work even when called directly.
 - Broken/missing dependencies require `--all`; the command exits 1 (ELSPROBLEMS) but stdout is still clean JSON — parse stdout regardless of exit code.
 - Size measurement must dedup hardlinks by (dev, ino) to match `du` (apparent size should equal `du -sb` exactly).

@@ -1,4 +1,4 @@
-package state
+package domain
 
 import "testing"
 
@@ -116,6 +116,20 @@ func TestMarkAllUpgradableRespectsHolds(t *testing.T) {
 	}
 }
 
+func TestGenericHealthFlag(t *testing.T) {
+	p := &PkgState{Name: "x", InstalledVersion: "1.0.0"}
+	if p.StateChar() != 'i' {
+		t.Fatalf("healthy installed row state char = %c, want i", p.StateChar())
+	}
+	p.Unhealthy = true
+	if p.StateChar() != 'b' {
+		t.Fatalf("unhealthy row state char = %c, want b (takes precedence over installed)", p.StateChar())
+	}
+	if p.Flag() != "b*" {
+		t.Fatalf("unhealthy flag = %q, want b*", p.Flag())
+	}
+}
+
 func TestFlagChars(t *testing.T) {
 	cases := []struct {
 		pkg  PkgState
@@ -123,7 +137,7 @@ func TestFlagChars(t *testing.T) {
 	}{
 		{PkgState{Name: "x", InstalledVersion: "1.0.0"}, "i*"},
 		{PkgState{Name: "x"}, "p*"},
-		{PkgState{Name: "x", Broken: true, InstalledVersion: "1.0.0"}, "b*"},
+		{PkgState{Name: "x", Unhealthy: true, InstalledVersion: "1.0.0"}, "b*"},
 		{PkgState{Name: "x", Mark: MarkInstall}, "p+"},
 	}
 	for i, c := range cases {

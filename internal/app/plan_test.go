@@ -3,29 +3,28 @@ package app
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/state"
+	"npmitude/internal/ecosystem"
+	"npmitude/internal/domain"
 )
 
 func modelWithMarks(t *testing.T, prefixID string) Model {
 	t.Helper()
 	m := modelWithLoadedPrefix(t, prefixID, "alpha", "beta", "gamma", "delta")
 	ps := m.state.Prefixes[prefixID]
-	ps.Packages["alpha"].Mark = state.MarkRemove
+	ps.Packages["alpha"].Mark = domain.MarkRemove
 	for _, n := range []string{"beta", "delta"} {
 		ps.Packages[n].InstalledVersion = ""
-		ps.Packages[n].Origin = state.OriginSearch
+		ps.Packages[n].Origin = domain.OriginSearch
 		ps.Packages[n].LatestVersion = "2.0.0"
-		ps.Packages[n].Mark = state.MarkInstall
+		ps.Packages[n].Mark = domain.MarkInstall
 	}
 	ps.Packages["gamma"].LatestVersion = "2.0.0" // outdated 1.0.0 -> 2.0.0
-	ps.Packages["gamma"].Mark = state.MarkUpgrade
+	ps.Packages["gamma"].Mark = domain.MarkUpgrade
 	return m
 }
 
@@ -50,7 +49,7 @@ func TestBuildPlanGroups(t *testing.T) {
 
 func TestBuildPlanExcludesHolds(t *testing.T) {
 	m := modelWithMarks(t, "/p")
-	m.state.SetMark("/p", "delta", state.MarkHold)
+	m.state.SetMark("/p", "delta", domain.MarkHold)
 	groups := m.buildPlan()
 	for _, g := range groups {
 		for _, r := range g.rows {
@@ -119,10 +118,10 @@ func TestApplyReloadReconcilesMarks(t *testing.T) {
 
 	// After the run: alpha removed OK, beta installed OK, gamma upgraded OK,
 	// delta install failed (absent from disk), epsilon held throughout.
-	fresh := map[string]*state.PkgState{
-		"beta":    {Name: "beta", InstalledVersion: "2.0.0", Origin: state.OriginInstalled},
-		"gamma":   {Name: "gamma", InstalledVersion: "2.0.0", Origin: state.OriginInstalled},
-		"epsilon": {Name: "epsilon", InstalledVersion: "1.0.0", Mark: state.MarkHold, Origin: state.OriginInstalled},
+	fresh := map[string]*domain.PkgState{
+		"beta":    {Name: "beta", InstalledVersion: "2.0.0", Origin: domain.OriginInstalled},
+		"gamma":   {Name: "gamma", InstalledVersion: "2.0.0", Origin: domain.OriginInstalled},
+		"epsilon": {Name: "epsilon", InstalledVersion: "1.0.0", Mark: domain.MarkHold, Origin: domain.OriginInstalled},
 	}
 	m = m.step(t, applyReloadMsg{prefixID: "/p", pkgs: fresh})
 
@@ -133,39 +132,29 @@ func TestApplyReloadReconcilesMarks(t *testing.T) {
 		t.Fatal("completion prompt should be showing")
 	}
 	ps := m.state.Prefixes["/p"]
-	if got := ps.Packages["beta"].Mark; got != state.MarkNone {
+	if got := ps.Packages["beta"].Mark; got != domain.MarkNone {
 		t.Fatalf("beta mark = %v, want cleared (installed)", got)
 	}
-	if got := ps.Packages["gamma"].Mark; got != state.MarkNone {
+	if got := ps.Packages["gamma"].Mark; got != domain.MarkNone {
 		t.Fatalf("gamma mark = %v, want cleared (upgraded)", got)
 	}
 	if _, ok := ps.Packages["alpha"]; ok {
 		t.Fatal("alpha should be gone after successful removal")
 	}
-	if got := ps.Packages["delta"].Mark; got != state.MarkInstall {
+	if got := ps.Packages["delta"].Mark; got != domain.MarkInstall {
 		t.Fatalf("delta mark = %v, want MarkInstall kept (failed install)", got)
 	}
-	if got := ps.Packages["epsilon"].Mark; got != state.MarkHold {
+	if got := ps.Packages["epsilon"].Mark; got != domain.MarkHold {
 		t.Fatalf("epsilon mark = %v, want MarkHold untouched", got)
 	}
 }
 
 func TestApplyRefusedOnNonWritablePrefix(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir) // keep displayPath stable
-	prefixID := filepath.Join(dir, "prefix")
-	if err := os.MkdirAll(filepath.Join(prefixID, "lib"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(prefixID, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(prefixID, "lib", "node_modules"), 0o555); err != nil {
-		t.Fatal(err)
-	}
-
-	m := modelWithLoadedPrefix(t, prefixID, "alpha")
-	m.state.Prefixes[prefixID].Packages["alpha"].Mark = state.MarkRemove
+	s := newStubEco()
+	s.writable = false
+	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.eco = s
+	m.state.Prefixes["/p"].Packages["alpha"].Mark = domain.MarkRemove
 	m = m.step(t, keyMsg(t, "g"))
 	nextRaw, _ := m.Update(keyMsg(t, "g"))
 	next := nextRaw.(Model)
@@ -202,15 +191,18 @@ func TestApplyDonePromptQuits(t *testing.T) {
 func TestApplyScreenShowsRawOutput(t *testing.T) {
 	m := modelWithMarks(t, "/p")
 	m.state.Applying = true
-	m.applyBatches = [][]string{{"i", "-g", "pad-left@2.1.0"}, {"rm", "-g", "oldpkg"}}
+	m.applyBatches = []ecosystem.Batch{
+		{Op: ecosystem.OpInstall, Items: []ecosystem.Item{{Name: "pad-left", Version: "2.1.0"}}, Label: "install pad-left@2.1.0"},
+		{Op: ecosystem.OpRemove, Items: []ecosystem.Item{{Name: "oldpkg"}}, Label: "remove oldpkg"},
+	}
 	m.applyBatchIdx = 0
-	m.applyCurrent = "npm i -g pad-left@2.1.0"
-	m.appendApplyLog("npm i -g pad-left@2.1.0", "added 1 package, and audited 3 packages in 420ms\n", nil)
+	m.applyCurrent = "install pad-left@2.1.0"
+	m.appendApplyLog("install pad-left@2.1.0", "added 1 package, and audited 3 packages in 420ms\n", nil)
 
 	out := render80x24(m)
 	for _, want := range []string{
 		"Applying changes —",
-		"$ npm i -g pad-left@2.1.0",
+		"$ install pad-left@2.1.0",
 		"added 1 package, and audited 3 packages in 420ms",
 		"applying… step 1 of 2",
 	} {
@@ -232,10 +224,12 @@ func TestApplyScreenShowsRawOutput(t *testing.T) {
 func TestApplyScreenCompletionPromptAndKeys(t *testing.T) {
 	m := modelWithMarks(t, "/p")
 	m.state.Applying = true
-	m.applyBatches = [][]string{{"i", "-g", "pad-left@2.1.0"}}
+	m.applyBatches = []ecosystem.Batch{
+		{Op: ecosystem.OpInstall, Items: []ecosystem.Item{{Name: "pad-left", Version: "2.1.0"}}, Label: "install pad-left@2.1.0"},
+	}
 	m.applyBatchIdx = 1
 	m.applyDone = true
-	m.appendApplyLog("npm i -g pad-left@2.1.0", "added 1 package in 420ms\n", nil)
+	m.appendApplyLog("install pad-left@2.1.0", "added 1 package in 420ms\n", nil)
 
 	out := render80x24(m)
 	if !strings.Contains(out, "Apply finished —") || !strings.Contains(out, "[enter] continue    [q] quit") {
@@ -261,13 +255,13 @@ func TestApplyScreenCompletionPromptAndKeys(t *testing.T) {
 
 func TestApplyLogFormatsEmptyAndErrorOutput(t *testing.T) {
 	m := modelWithMarks(t, "/p")
-	m.appendApplyLog("npm i -g silent", "\n", nil)
-	m.appendApplyLog("npm rm -g broken", "npm ERR! bad thing\n", errors.New("exit status 1"))
+	m.appendApplyLog("install silent", "\n", nil)
+	m.appendApplyLog("remove broken", "npm ERR! bad thing\n", errors.New("exit status 1"))
 
 	want := []string{
-		"$ npm i -g silent",
+		"$ install silent",
 		"    (no output)",
-		"$ npm rm -g broken",
+		"$ remove broken",
 		"    npm ERR! bad thing",
 		"    error: exit status 1",
 	}
@@ -285,7 +279,7 @@ func TestCtrlCAbortsRunningBatch(t *testing.T) {
 	m := modelWithMarks(t, "/p")
 	ctx, cancel := context.WithCancel(context.Background())
 	m.state.Applying = true
-	m.applyBatches = [][]string{{"i", "-g", "x"}}
+	m.applyBatches = []ecosystem.Batch{{Op: ecosystem.OpInstall, Items: []ecosystem.Item{{Name: "x"}}, Label: "install x"}}
 	m.applyBatchIdx = 0
 	m.applyCancel = cancel
 
@@ -301,7 +295,7 @@ func TestCtrlCAbortsRunningBatch(t *testing.T) {
 	m2 := modelWithMarks(t, "/p")
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	m2.state.Applying = true
-	m2.applyBatches = [][]string{{"i", "-g", "x"}}
+	m2.applyBatches = []ecosystem.Batch{{Op: ecosystem.OpInstall, Items: []ecosystem.Item{{Name: "x"}}, Label: "install x"}}
 	m2.applyBatchIdx = 0
 	m2.applyCancel = cancel2
 	m2 = m2.step(t, keyMsg(t, "j"))

@@ -7,7 +7,7 @@ import (
 )
 
 func TestQuitKey(t *testing.T) {
-	m := New()
+	m := New(newStubEco())
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if _, ok := next.(Model); !ok {
 		t.Fatal("expected Model back from Update")

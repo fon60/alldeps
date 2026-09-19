@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -15,76 +17,86 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.clampCursor()
-	case activePrefixMsg:
-		if msg.err != nil {
-			m.notice = "cannot determine active npm prefix: " + msg.err.Error()
-			return m, nil
-		}
-		m.activeFallback = msg.prefixID
-		if m.locks != nil {
-			if err := m.locks.Acquire(msg.prefixID); err != nil {
-				m.notice = heldNotice(msg.prefixID, err)
-				m.screen = ScreenPicker
-				m.pickerLocked = m.lockedEnvs()
-				return m, nil
-			}
-		}
-		m.state.ActivePrefixID = msg.prefixID
-		if _, ok := m.state.Prefixes[msg.prefixID]; !ok {
-			m.state.Prefixes[msg.prefixID] = &state.PrefixState{ID: msg.prefixID, Packages: map[string]*state.PkgState{}}
-		}
-		return m, loadPrefixCmd(msg.prefixID)
-	case prefixesMsg:
+	case discoverMsg:
 		if msg.err != nil {
 			m.notice = "prefix scan failed: " + msg.err.Error()
 			return m, nil
 		}
-		m.prefixes = msg.infos
+		m.envs = msg.envs
+		if m.state.ActivePrefixID == "" {
+			id := ""
+			for _, e := range msg.envs {
+				if e.Meta[ecosystem.MetaActive] == "1" {
+					id = e.ID
+					break
+				}
+			}
+			if id == "" && len(msg.envs) > 0 {
+				id = msg.envs[0].ID
+			}
+			if id == "" {
+				return m, nil
+			}
+			m.activeFallback = id
+			if m.locks != nil {
+				if err := m.locks.Acquire(id); err != nil {
+					m.notice = heldNotice(id, err)
+					m.screen = ScreenPicker
+					m.pickerLocked = m.lockedEnvs()
+					return m, nil
+				}
+			}
+			m.state.ActivePrefixID = id
+			if _, ok := m.state.Prefixes[id]; !ok {
+				m.state.Prefixes[id] = &domain.PrefixState{ID: id, Packages: map[string]*domain.PkgState{}}
+			}
+			return m, m.loadEnvCmd(id)
+		}
 		if m.screen == ScreenPicker {
 			m.pickerLocked = m.lockedEnvs()
-			for i, p := range m.prefixes {
-				if !m.pickerLocked[p.ID] {
+			for i, e := range m.envs {
+				if !m.pickerLocked[e.ID] {
 					m.pickerCursor = i
 					break
 				}
 			}
 		}
-		return m, m.dropVanishedPrefixes()
+		return m, m.dropVanishedEnvs()
 	case refreshMsg:
-		m.prefixes = msg.infos
+		m.envs = msg.envs
 		if msg.scanErr != nil {
 			m.notice = "prefix scan failed: " + msg.scanErr.Error()
 		}
 		if msg.loadErr != nil {
 			m.notice = "reload failed for " + msg.prefixID + ": " + msg.loadErr.Error()
 		} else if msg.pkgs != nil {
-			m.applyLoaded(msg.prefixID, msg.registryURL, msg.pkgs)
+			m.applyLoaded(msg.prefixID, msg.pkgs)
 			names := make([]string, 0, len(msg.pkgs))
 			for name := range msg.pkgs {
 				names = append(names, name)
 			}
 			cmds := []tea.Cmd{measureSizesCmd(msg.prefixID, names)}
-			if msg.registryURL != "" && len(names) > 0 {
-				cmds = append(cmds, checkOutdatedCmd(msg.prefixID, msg.registryURL, names))
+			if len(names) > 0 {
+				cmds = append(cmds, m.checkOutdatedCmd(msg.prefixID, names))
 			}
 			m.clampCursor()
 			return m, tea.Batch(cmds...)
 		}
-		return m, m.dropVanishedPrefixes()
-	case loadPrefixMsg:
+		return m, m.dropVanishedEnvs()
+	case loadEnvMsg:
 		if msg.err != nil {
 			m.notice = "failed to load prefix " + msg.prefixID + ": " + msg.err.Error()
 			return m, nil
 		}
-		m.applyLoaded(msg.prefixID, msg.registryURL, msg.pkgs)
+		m.applyLoaded(msg.prefixID, msg.pkgs)
 		m.clampCursor()
 		names := make([]string, 0, len(msg.pkgs))
 		for name := range msg.pkgs {
 			names = append(names, name)
 		}
 		cmds := []tea.Cmd{measureSizesCmd(msg.prefixID, names)}
-		if msg.registryURL != "" && len(names) > 0 {
-			cmds = append(cmds, checkOutdatedCmd(msg.prefixID, msg.registryURL, names))
+		if len(names) > 0 {
+			cmds = append(cmds, m.checkOutdatedCmd(msg.prefixID, names))
 		}
 		return m, tea.Batch(cmds...)
 	case outdatedMsg:
@@ -97,6 +109,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.LatestVersion = v
 			}
 		}
+		if msg.err != nil {
+			if !errors.Is(msg.err, ecosystem.ErrNoRegistry) {
+				m.notice = "registry unreachable — upgradability unknown (list is local data only)"
+			}
+			return m, nil
+		}
 		if msg.total > 0 && msg.failed == msg.total {
 			m.notice = "registry unreachable — upgradability unknown (list is local data only)"
 		} else if msg.failed > 0 {
@@ -105,7 +123,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchMsg:
 		if msg.err != nil {
 			m.searchLoading = false
-			if msg.from > 0 {
+			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
+				m.notice = "no registry configured for this prefix"
+			} else if msg.from > 0 {
 				m.notice = "failed to load more results: " + msg.err.Error()
 			} else {
 				m.notice = "search failed: " + msg.err.Error()
@@ -146,10 +166,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.infoLocal = msg.local
 	case versionsMsg:
 		if msg.name != m.infoName || m.screen != ScreenVersions {
-			return m, nil
+			return m, nil // stale: the user moved on
 		}
 		if msg.err != nil {
-			m.infoErr = "version history unavailable: " + msg.err.Error()
+			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
+				m.infoErr = "no registry configured for this prefix — version history unavailable"
+			} else {
+				m.infoErr = "version history unavailable: " + msg.err.Error()
+			}
 			m.screen = ScreenInfo
 			return m, nil
 		}
@@ -157,9 +181,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.positionVersionCursor()
 	case readmeMsg:
 		if msg.name != m.infoName || m.screen != ScreenReadme {
-			return m, nil
+			return m, nil // stale: the user moved on
 		}
 		if msg.err != nil {
+			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
+				m.setReadme("")
+				return m, nil
+			}
 			m.readmeLines = []string{fmt.Sprintf("readme unavailable: %s", msg.err)}
 			return m, nil
 		}
@@ -172,7 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCancel = nil
 		m.applyBatchIdx = msg.idx + 1
 		if m.applyBatchIdx < len(m.applyBatches) {
-			m.applyCurrent = "npm " + strings.Join(m.applyBatches[m.applyBatchIdx], " ")
+			m.applyCurrent = m.applyBatches[m.applyBatchIdx].Label
 		} else {
 			m.applyCurrent = ""
 		}
@@ -185,9 +213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			if old := m.state.Prefixes[msg.prefixID]; old != nil {
 				for name, p := range old.Packages {
-					if p.Mark == state.MarkInstall && !p.Installed() {
+					if p.Mark == domain.MarkInstall && !p.Installed() {
 						if _, ok := msg.pkgs[name]; !ok {
-							msg.pkgs[name] = &state.PkgState{
+							msg.pkgs[name] = &domain.PkgState{
 								Name:          p.Name,
 								LatestVersion: p.LatestVersion,
 								Description:   p.Description,
@@ -199,7 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			m.applyLoaded(msg.prefixID, msg.registryURL, msg.pkgs)
+			m.applyLoaded(msg.prefixID, msg.pkgs)
 			m.reconcileMarks()
 			if m.applyFailed > 0 {
 				m.notice = fmt.Sprintf("apply finished with %d failed operation(s); list re-read from disk", m.applyFailed)
@@ -305,14 +333,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = ScreenPicker
 		m.pickerLocked = m.lockedEnvs()
 		m.pickerCursor = 0
-		for i, p := range m.prefixes {
-			if p.ID == m.state.ActivePrefixID {
+		for i, e := range m.envs {
+			if e.ID == m.state.ActivePrefixID {
 				m.pickerCursor = i
 				break
 			}
 		}
 	case "e":
-		return m, m.cyclePrefix()
+		return m, m.cycleEnv()
 	case "g":
 		if m.state.Applying {
 			m.notice = "apply already in progress"
@@ -386,18 +414,18 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pickerCursor--
 		}
 	case "down", "j":
-		if m.pickerCursor < len(m.prefixes)-1 {
+		if m.pickerCursor < len(m.envs)-1 {
 			m.pickerCursor++
 		}
 	case "enter":
-		if m.pickerCursor < len(m.prefixes) {
-			id := m.prefixes[m.pickerCursor].ID
+		if m.pickerCursor < len(m.envs) {
+			id := m.envs[m.pickerCursor].ID
 			if m.pickerLocked[id] {
 				m.notice = "environment " + displayPath(id) + " is open in another npmitude — choose a different environment"
 				return m, nil
 			}
 			m.screen = ScreenList
-			return m, m.switchPrefix(id)
+			return m, m.switchEnv(id)
 		}
 	}
 	return m, nil
@@ -523,8 +551,8 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case PromptSearch:
 			query := strings.TrimSpace(m.prompt.input.Value())
 			if query != "" {
-				if ps := m.state.Active(); ps != nil && ps.RegistryURL != "" {
-					cmd = searchCmd(ps.ID, ps.RegistryURL, query, 0)
+				if ps := m.state.Active(); ps != nil {
+					cmd = m.searchCmd(ps.ID, query, 0)
 				} else {
 					m.notice = "no registry configured for this prefix"
 				}

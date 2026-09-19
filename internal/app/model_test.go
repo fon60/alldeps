@@ -6,19 +6,20 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 	"npmitude/internal/lock"
-	"npmitude/internal/state"
 )
 
 func modelWithLoadedPrefix(t *testing.T, prefixID string, names ...string) Model {
 	t.Helper()
-	m := New()
+	m := New(newStubEco())
 	m.locks = lock.New(filepath.Join(t.TempDir(), "locks"))
-	pkgs := map[string]*state.PkgState{}
+	pkgs := map[string]*domain.PkgState{}
 	for _, n := range names {
-		pkgs[n] = &state.PkgState{Name: n, InstalledVersion: "1.0.0", Origin: state.OriginInstalled}
+		pkgs[n] = &domain.PkgState{Name: n, InstalledVersion: "1.0.0", Origin: domain.OriginInstalled}
 	}
-	m.state.Prefixes[prefixID] = &state.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
+	m.state.Prefixes[prefixID] = &domain.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
 	m.state.ActivePrefixID = prefixID
 	return m
 }
@@ -41,18 +42,18 @@ func TestSizesMsgFillsRow(t *testing.T) {
 
 func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
-	m.state.SetMark("/p", "alpha", state.MarkRemove)
+	m.state.SetMark("/p", "alpha", domain.MarkRemove)
 	m.state.Prefixes["/p"].Packages["alpha"].LatestVersion = "1.1.0"
 
-	fresh := map[string]*state.PkgState{
-		"alpha": {Name: "alpha", InstalledVersion: "1.0.0", Origin: state.OriginInstalled},
+	fresh := map[string]*domain.PkgState{
+		"alpha": {Name: "alpha", InstalledVersion: "1.0.0", Origin: domain.OriginInstalled},
 		// beta removed from disk, gamma newly installed
-		"gamma": {Name: "gamma", InstalledVersion: "2.0.0", Origin: state.OriginInstalled},
+		"gamma": {Name: "gamma", InstalledVersion: "2.0.0", Origin: domain.OriginInstalled},
 	}
-	_, _ = m.Update(loadPrefixMsg{prefixID: "/p", pkgs: fresh})
+	_, _ = m.Update(loadEnvMsg{prefixID: "/p", pkgs: fresh})
 
 	ps := m.state.Prefixes["/p"]
-	if got := ps.Packages["alpha"].Mark; got != state.MarkRemove {
+	if got := ps.Packages["alpha"].Mark; got != domain.MarkRemove {
 		t.Fatalf("alpha mark = %v, want MarkRemove preserved", got)
 	}
 	if got := ps.Packages["alpha"].LatestVersion; got != "1.1.0" {
@@ -66,20 +67,20 @@ func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 	}
 }
 
-func TestActivePrefixMsgStartsLoad(t *testing.T) {
+func TestDiscoverMsgStartsLoad(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // keep lock files out of the real state dir
-	m := New()
-	next, cmd := m.Update(activePrefixMsg{prefixID: "/p"})
+	m := New(newStubEco())
+	next, cmd := m.Update(discoverMsg{envs: []ecosystem.Environment{{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}})
 	if next.(Model).state.ActivePrefixID != "/p" {
 		t.Fatal("active prefix not set")
 	}
 	if cmd == nil {
-		t.Fatal("expected load command after active prefix resolved")
+		t.Fatal("expected load command after discovery resolved the active environment")
 	}
 }
 
 func TestQuitStillWorks(t *testing.T) {
-	m := New()
+	m := New(newStubEco())
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if cmd == nil {
 		t.Fatal("expected quit command")

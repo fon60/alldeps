@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
 )
 
 func keyMsg(t *testing.T, s string) tea.KeyMsg {
@@ -97,8 +97,8 @@ func TestFilterPromptEscCancels(t *testing.T) {
 func TestLocalMatchNarrowsInstalledOnly(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "npm", "opencode-ai")
 	// a not-installed search row that also matches the pattern must be excluded
-	m.state.Prefixes["/p"].Packages["npx-search"] = &state.PkgState{
-		Name: "npx-search", Origin: state.OriginSearch, LatestVersion: "1.0.0",
+	m.state.Prefixes["/p"].Packages["npx-search"] = &domain.PkgState{
+		Name: "npx-search", Origin: domain.OriginSearch, LatestVersion: "1.0.0",
 	}
 
 	m = m.step(t, keyMsg(t, "l"))
@@ -130,7 +130,7 @@ func TestLocalMatchEmptyPatternShowsAll(t *testing.T) {
 	}
 }
 
-func names(rows []*state.PkgState) []string {
+func names(rows []*domain.PkgState) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.Name)

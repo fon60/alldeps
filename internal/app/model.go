@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,13 +12,11 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 	"npmitude/internal/filter"
 	"npmitude/internal/lock"
-	"npmitude/internal/npmcmd"
-	"npmitude/internal/prefix"
-	"npmitude/internal/registry"
 	"npmitude/internal/sizes"
-	"npmitude/internal/state"
 )
 
 // Version is the application version shown in the header.
@@ -61,7 +57,8 @@ func newPrompt(kind PromptKind) *promptState {
 }
 
 type Model struct {
-	state          *state.AppState
+	state          *domain.AppState
+	eco            ecosystem.Ecosystem
 	screen         Screen
 	helpFrom       Screen // screen to return to when the help screen closes
 	width          int
@@ -72,10 +69,10 @@ type Model struct {
 	notice         string
 	filterPred     filter.Predicate
 	prompt         *promptState
-	prefixes       []prefix.Info
+	envs           []ecosystem.Environment
 	pickerCursor   int
 	pickerLocked   map[string]bool // env IDs held by another live instance
-	activeFallback string          // last resolved active npm prefix (for vanished-prefix fallback)
+	activeFallback string          // last resolved active environment (for vanished-prefix fallback)
 
 	// searchActive is true while a registry search result set is on display;
 	// the list then shows only those results (plus installed rows that match).
@@ -91,18 +88,18 @@ type Model struct {
 
 	locks *lock.Manager
 
-	planSizes     map[string]int64 // name -> unpacked size shown in the plan screen
-	applyBatches  [][]string       // queued npm invocations for the running apply
+	planSizes    map[string]int64      // name -> unpacked size shown in the plan screen
+	applyBatches []ecosystem.Batch     // queued batches for the running apply
 	applyBatchIdx int
 	applyFrom     map[string]string // name -> installed version at apply start
 	applyFailed   int
 	applyDone     bool               // completion prompt is showing
-	applyLog      []string           // raw npm output lines shown on the apply screen
+	applyLog      []string           // raw manager output lines shown on the apply screen
 	applyCurrent  string             // command currently running (bottom line while applying)
 	applyCancel   context.CancelFunc // aborts the batch currently running
 
 	infoName     string // package the info screen shows
-	infoDoc      *registry.Doc
+	infoDoc      *ecosystem.Doc
 	infoLocal    bool   // doc came from the local package.json (offline)
 	infoErr      string // set when metadata could not be fetched/read
 	verCursor    int
@@ -114,12 +111,13 @@ type Model struct {
 	quitConfirm bool // quit confirmation prompt is showing
 }
 
-func New() Model {
+// New builds the app model around the injected ecosystem adapter.
+func New(eco ecosystem.Ecosystem) Model {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown"
 	}
-	return Model{state: state.NewAppState(), locks: lock.NewDefault(), hostname: host}
+	return Model{state: domain.NewAppState(), eco: eco, locks: lock.NewDefault(), hostname: host}
 }
 
 // resetSearch clears the transient search-result view (marks are untouched;
@@ -142,12 +140,12 @@ func (m Model) hasMoreSearch() bool {
 // loadMoreSearchCmd fetches the next page of the active search results.
 func (m *Model) loadMoreSearchCmd() tea.Cmd {
 	ps := m.state.Active()
-	if ps == nil || ps.RegistryURL == "" || !m.hasMoreSearch() {
+	if ps == nil || !m.hasMoreSearch() {
 		return nil
 	}
 	from := m.searchFetched
 	m.searchLoading = true
-	return searchCmd(ps.ID, ps.RegistryURL, m.searchQuery, from)
+	return m.searchCmd(ps.ID, m.searchQuery, from)
 }
 
 // heldNotice renders the refusal message identifying a live lock holder.
@@ -166,9 +164,9 @@ func (m Model) lockedEnvs() map[string]bool {
 	if m.locks == nil {
 		return out
 	}
-	for _, p := range m.prefixes {
-		if m.locks.IsHeld(p.ID) {
-			out[p.ID] = true
+	for _, e := range m.envs {
+		if m.locks.IsHeld(e.ID) {
+			out[e.ID] = true
 		}
 	}
 	return out
@@ -180,68 +178,58 @@ func (m *Model) releaseAll() {
 	}
 }
 
-type prefixesMsg struct {
-	infos []prefix.Info
-	err   error
+type discoverMsg struct {
+	envs []ecosystem.Environment
+	err  error
 }
 
-// prefixScanCmd detects all Node prefixes in the background.
-func prefixScanCmd() tea.Cmd {
+// discoverCmd asks the ecosystem for its destinations in the background.
+func (m Model) discoverCmd() tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		infos, err := prefix.Detect(ctx, prefix.Config{})
-		return prefixesMsg{infos: infos, err: err}
+		envs, err := eco.Discover(ctx)
+		return discoverMsg{envs: envs, err: err}
 	}
 }
 
-// refreshCmd re-scans prefixes and reloads the active prefix from disk.
+// refreshCmd re-discovers environments and reloads the active one from disk.
 func (m Model) refreshCmd() tea.Cmd {
 	active := m.state.ActivePrefixID
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		infos, scanErr := prefix.Detect(ctx, prefix.Config{})
+		envs, scanErr := eco.Discover(ctx)
 		var loadErr error
-		var pkgs map[string]*state.PkgState
-		var regURL string
+		var pkgs map[string]*domain.PkgState
 		if active != "" {
-			parsed, err := npmcmd.LSGlobal(ctx, active)
+			list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: active})
 			if err != nil {
 				loadErr = err
 			} else {
-				pkgs = make(map[string]*state.PkgState, len(parsed))
-				for name, p := range parsed {
-					pkgs[name] = &state.PkgState{Name: name, InstalledVersion: p.Version, Broken: p.Broken, Origin: state.OriginInstalled}
-				}
-				regURL, _ = npmcmd.GetRegistry(ctx, active)
+				pkgs = toPkgStates(list)
 			}
 		}
-		return refreshMsg{infos: infos, scanErr: scanErr, prefixID: active, pkgs: pkgs, registryURL: regURL, loadErr: loadErr}
+		return refreshMsg{envs: envs, scanErr: scanErr, prefixID: active, pkgs: pkgs, loadErr: loadErr}
 	}
 }
 
 type refreshMsg struct {
-	infos       []prefix.Info
-	scanErr     error
-	prefixID    string
-	pkgs        map[string]*state.PkgState
-	registryURL string
-	loadErr     error
+	envs     []ecosystem.Environment
+	scanErr  error
+	prefixID string
+	pkgs     map[string]*domain.PkgState
+	loadErr  error
 }
 
 // Messages from async work.
 
-type activePrefixMsg struct {
+type loadEnvMsg struct {
 	prefixID string
+	pkgs     map[string]*domain.PkgState
 	err      error
-}
-
-type loadPrefixMsg struct {
-	prefixID    string
-	registryURL string
-	pkgs        map[string]*state.PkgState
-	err         error
 }
 
 type outdatedMsg struct {
@@ -249,27 +237,37 @@ type outdatedMsg struct {
 	versions map[string]string
 	failed   int
 	total    int
+	err      error
 }
 
 type searchMsg struct {
 	prefixID string
 	query    string
 	from     int
-	hits     []registry.SearchHit
+	hits     []ecosystem.Hit
 	total    int
 	err      error
 }
 
-// searchCmd queries one page of the active prefix's configured registry
-// search endpoint, starting at offset from.
-func searchCmd(prefixID, registryURL, query string, from int) tea.Cmd {
+// searchCmd queries one page of the environment's package index, starting at
+// offset from.
+func (m Model) searchCmd(prefixID, query string, from int) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		client := registry.NewClient(registryURL)
-		hits, total, err := client.Search(ctx, query, searchPageSize, from)
+		hits, total, err := eco.Search(ctx, ecosystem.Environment{ID: prefixID}, query, searchPageSize, from)
 		return searchMsg{prefixID: prefixID, query: query, from: from, hits: hits, total: total, err: err}
 	}
+}
+
+// toPkgStates converts adapter-reported installed packages into list rows.
+func toPkgStates(pkgs []ecosystem.Package) map[string]*domain.PkgState {
+	out := make(map[string]*domain.PkgState, len(pkgs))
+	for _, p := range pkgs {
+		out[p.Name] = &domain.PkgState{Name: p.Name, InstalledVersion: p.Version, Unhealthy: p.Unhealthy, Origin: domain.OriginInstalled}
+	}
+	return out
 }
 
 // applySearchResults merges one page of search hits into the active prefix's
@@ -278,14 +276,14 @@ func searchCmd(prefixID, registryURL, query string, from int) tea.Cmd {
 // search rows without a pending mark are replaced by the first page, while
 // later pages only add; marked search rows are retained regardless. While
 // active, visibleRows shows only these results.
-func (m *Model) applySearchResults(prefixID string, query string, from int, hits []registry.SearchHit, total int) {
+func (m *Model) applySearchResults(prefixID string, query string, from int, hits []ecosystem.Hit, total int) {
 	ps := m.state.Prefixes[prefixID]
 	if ps == nil {
 		return
 	}
 	if from == 0 {
 		for name, p := range ps.Packages {
-			if p.Origin == state.OriginSearch && p.Mark == state.MarkNone {
+			if p.Origin == domain.OriginSearch && p.Mark == domain.MarkNone {
 				delete(ps.Packages, name)
 			}
 		}
@@ -300,17 +298,17 @@ func (m *Model) applySearchResults(prefixID string, query string, from int, hits
 	for _, h := range hits {
 		m.searchNames[h.Name] = true
 		if p, ok := ps.Packages[h.Name]; ok {
-			if p.Origin == state.OriginSearch && !ordered[h.Name] {
+			if p.Origin == domain.OriginSearch && !ordered[h.Name] {
 				m.searchOrder = append(m.searchOrder, h.Name) // marked leftover at its registry rank
 				ordered[h.Name] = true
 			}
 			continue // installed row stays authoritative; marked search row retained
 		}
-		ps.Packages[h.Name] = &state.PkgState{
+		ps.Packages[h.Name] = &domain.PkgState{
 			Name:          h.Name,
 			LatestVersion: h.Version,
 			Description:   h.Description,
-			Origin:        state.OriginSearch,
+			Origin:        domain.OriginSearch,
 		}
 		m.searchOrder = append(m.searchOrder, h.Name)
 		ordered[h.Name] = true
@@ -329,7 +327,7 @@ func (m *Model) applySearchResults(prefixID string, query string, from int, hits
 func (m *Model) clearSearch() {
 	if ps := m.state.Active(); ps != nil {
 		for name, p := range ps.Packages {
-			if p.Origin == state.OriginSearch && p.Mark == state.MarkNone {
+			if p.Origin == domain.OriginSearch && p.Mark == domain.MarkNone {
 				delete(ps.Packages, name)
 			}
 		}
@@ -338,27 +336,27 @@ func (m *Model) clearSearch() {
 	m.clampCursor()
 }
 
-// checkOutdatedCmd fetches latest dist-tags in the background (never blocks
-// first paint) using the prefix's configured registry.
-func checkOutdatedCmd(prefixID, registryURL string, names []string) tea.Cmd {
+// checkOutdatedCmd fetches latest versions in the background (never blocks
+// first paint).
+func (m Model) checkOutdatedCmd(prefixID string, names []string) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		client := registry.NewClient(registryURL)
-		versions, failed := client.CheckOutdated(ctx, names)
-		return outdatedMsg{prefixID: prefixID, versions: versions, failed: failed, total: len(names)}
+		versions, failed, err := eco.LatestVersions(ctx, ecosystem.Environment{ID: prefixID}, names)
+		return outdatedMsg{prefixID: prefixID, versions: versions, failed: failed, total: len(names), err: err}
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(resolveActivePrefixCmd(), prefixScanCmd())
+	return m.discoverCmd()
 }
 
-// switchPrefix makes id the active environment and loads it if not already
+// switchEnv makes id the active environment and loads it if not already
 // loaded. The new environment's lock is acquired before the old one is
 // released (no gap). Pending marks of other prefixes are untouched (they live
 // in their own PrefixState).
-func (m *Model) switchPrefix(id string) tea.Cmd {
+func (m *Model) switchEnv(id string) tea.Cmd {
 	if id == "" || id == m.state.ActivePrefixID {
 		return nil
 	}
@@ -374,7 +372,7 @@ func (m *Model) switchPrefix(id string) tea.Cmd {
 		m.locks.Release(old)
 	}
 	if _, ok := m.state.Prefixes[id]; !ok {
-		m.state.Prefixes[id] = &state.PrefixState{ID: id, Packages: map[string]*state.PkgState{}}
+		m.state.Prefixes[id] = &domain.PrefixState{ID: id, Packages: map[string]*domain.PkgState{}}
 	}
 	m.cursor = 0
 	m.notice = ""
@@ -383,28 +381,28 @@ func (m *Model) switchPrefix(id string) tea.Cmd {
 	if ps.Loaded {
 		return nil
 	}
-	return loadPrefixCmd(id)
+	return m.loadEnvCmd(id)
 }
 
-// dropVanishedPrefixes removes prefixes that disappeared since the last scan
-// and, if the selected one vanished, falls back to the active npm prefix with
-// a notice (spec: Vanished prefix handling). It returns a load command for
-// the fallback when one must be loaded.
-func (m *Model) dropVanishedPrefixes() tea.Cmd {
-	if len(m.prefixes) == 0 {
+// dropVanishedEnvs removes environments that disappeared since the last scan
+// and, if the selected one vanished, falls back to the manager's active
+// environment with a notice (spec: Vanished prefix handling). It returns a
+// load command for the fallback when one must be loaded.
+func (m *Model) dropVanishedEnvs() tea.Cmd {
+	if len(m.envs) == 0 {
 		return nil
 	}
 	live := map[string]bool{}
-	for _, p := range m.prefixes {
-		live[p.ID] = true
+	for _, e := range m.envs {
+		live[e.ID] = true
 	}
 	active := m.state.ActivePrefixID
 	if active != "" && !live[active] {
 		fallback := m.activeFallback
 		if fallback == "" || !live[fallback] {
-			fallback = m.prefixes[0].ID
+			fallback = m.envs[0].ID
 		}
-		cmd := m.switchPrefix(fallback)
+		cmd := m.switchEnv(fallback)
 		if m.state.ActivePrefixID == fallback {
 			m.notice = "prefix " + displayPath(active) + " no longer exists — fell back to " + displayPath(fallback)
 		}
@@ -413,29 +411,20 @@ func (m *Model) dropVanishedPrefixes() tea.Cmd {
 	return nil
 }
 
-// cyclePrefix switches to the next detected prefix in version order.
-func (m *Model) cyclePrefix() tea.Cmd {
-	if len(m.prefixes) == 0 {
+// cycleEnv switches to the next detected environment in version order.
+func (m *Model) cycleEnv() tea.Cmd {
+	if len(m.envs) == 0 {
 		return nil
 	}
 	idx := -1
-	for i, p := range m.prefixes {
-		if p.ID == m.state.ActivePrefixID {
+	for i, e := range m.envs {
+		if e.ID == m.state.ActivePrefixID {
 			idx = i
 			break
 		}
 	}
-	next := m.prefixes[(idx+1)%len(m.prefixes)]
-	return m.switchPrefix(next.ID)
-}
-
-func resolveActivePrefixCmd() tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		p, err := prefix.Active(ctx)
-		return activePrefixMsg{prefixID: p, err: err}
-	}
+	next := m.envs[(idx+1)%len(m.envs)]
+	return m.switchEnv(next.ID)
 }
 
 type planSizeMsg struct {
@@ -446,53 +435,52 @@ type planSizeMsg struct {
 
 // planSizeCmd fetches the approximate unpacked size of one install target for
 // the plan screen. Failures leave the row showing "…".
-func planSizeCmd(registryURL, name, version string) tea.Cmd {
+func (m Model) planSizeCmd(prefixID, name, version string) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		b, err := registry.NewClient(registryURL).UnpackedSize(ctx, name, version)
+		b, err := eco.UnpackedSize(ctx, ecosystem.Environment{ID: prefixID}, name, version)
 		return planSizeMsg{name: name, bytes: b, err: err}
 	}
 }
 
 type infoDataMsg struct {
 	name  string
-	doc   *registry.Doc
+	doc   *ecosystem.Doc
 	local bool
 	err   error
 }
 
-// infoCmd loads package metadata for the info screen: the local package.json
-// for installed packages (offline-capable), otherwise the registry document.
-func infoCmd(prefixID, name, registryURL string, installed bool) tea.Cmd {
+// infoCmd loads package metadata for the info screen: the local document for
+// installed packages (offline-capable), otherwise the registry document.
+func (m Model) infoCmd(prefixID, name string, installed bool) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
-		if installed {
-			doc, err := npmcmd.LocalDoc(prefixID, name)
-			return infoDataMsg{name: name, doc: doc, local: true, err: err}
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		doc, err := registry.NewClient(registryURL).GetDoc(ctx, name)
-		return infoDataMsg{name: name, doc: doc, local: false, err: err}
+		doc, local, err := eco.Doc(ctx, ecosystem.Environment{ID: prefixID}, name, installed)
+		return infoDataMsg{name: name, doc: doc, local: local, err: err}
 	}
 }
 
 type versionsMsg struct {
 	name string
-	doc  *registry.Doc
+	doc  *ecosystem.Doc
 	err  error
 }
 
-// versionsCmd fetches the full registry document for the version history view.
-func versionsCmd(registryURL, name string) tea.Cmd {
+// versionsCmd fetches the full package document for the version history view.
+func (m Model) versionsCmd(prefixID, name string) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		doc, err := registry.NewClient(registryURL).GetDoc(ctx, name)
+		doc, _, err := eco.Doc(ctx, ecosystem.Environment{ID: prefixID}, name, false)
 		if err != nil {
 			return versionsMsg{name: name, err: err}
 		}
-		state.SortVersions(doc.Versions)
+		domain.SortVersions(doc.Versions)
 		return versionsMsg{name: name, doc: doc}
 	}
 }
@@ -504,12 +492,13 @@ type readmeMsg struct {
 	err   error
 }
 
-// readmeFetchCmd fetches the registry document on demand for its readme field.
-func readmeFetchCmd(registryURL, name string) tea.Cmd {
+// readmeFetchCmd fetches the package document on demand for its readme field.
+func (m Model) readmeFetchCmd(prefixID, name string) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		doc, err := registry.NewClient(registryURL).GetDoc(ctx, name)
+		doc, _, err := eco.Doc(ctx, ecosystem.Environment{ID: prefixID}, name, false)
 		if err != nil {
 			return readmeMsg{name: name, err: err}
 		}
@@ -519,21 +508,20 @@ func readmeFetchCmd(registryURL, name string) tea.Cmd {
 
 type applyBatchMsg struct {
 	idx     int
-	cmdLine string // human-readable command, e.g. "npm i -g foo@1.2.3"
-	output  string // combined stdout+stderr of the npm invocation
+	cmdLine string // human-readable command line supplied by the adapter
+	output  string // combined stdout+stderr of the manager invocation
 	err     error
 }
 
 type applyReloadMsg struct {
-	prefixID    string
-	registryURL string
-	pkgs        map[string]*state.PkgState
-	err         error
+	prefixID string
+	pkgs     map[string]*domain.PkgState
+	err      error
 }
 
 // targetVersion is the version an install/upgrade mark will apply: a pinned
 // version if set, else the known latest.
-func targetVersion(p *state.PkgState) string {
+func targetVersion(p *domain.PkgState) string {
 	if p.TargetVersion != "" {
 		return p.TargetVersion
 	}
@@ -541,18 +529,18 @@ func targetVersion(p *state.PkgState) string {
 }
 
 // planRows splits the active prefix's marked packages by operation kind.
-func (m Model) planRows() (installs, removals, upgrades []*state.PkgState) {
+func (m Model) planRows() (installs, removals, upgrades []*domain.PkgState) {
 	ps := m.state.Active()
 	if ps == nil {
 		return
 	}
 	for _, p := range ps.Rows() {
 		switch p.Mark {
-		case state.MarkInstall:
+		case domain.MarkInstall:
 			installs = append(installs, p)
-		case state.MarkRemove:
+		case domain.MarkRemove:
 			removals = append(removals, p)
-		case state.MarkUpgrade:
+		case domain.MarkUpgrade:
 			upgrades = append(upgrades, p)
 		}
 	}
@@ -561,7 +549,7 @@ func (m Model) planRows() (installs, removals, upgrades []*state.PkgState) {
 
 type planGroup struct {
 	title string
-	rows  []*state.PkgState
+	rows  []*domain.PkgState
 }
 
 // buildPlan groups pending marks for the plan preview screen.
@@ -585,10 +573,10 @@ func (m Model) openPlan() (Model, tea.Cmd) {
 	m.screen = ScreenPlan
 	m.planSizes = map[string]int64{}
 	var cmds []tea.Cmd
-	if ps := m.state.Active(); ps != nil && ps.RegistryURL != "" {
+	if ps := m.state.Active(); ps != nil {
 		for _, p := range ps.Packages {
-			if p.Mark == state.MarkInstall {
-				cmds = append(cmds, planSizeCmd(ps.RegistryURL, p.Name, targetVersion(p)))
+			if p.Mark == domain.MarkInstall {
+				cmds = append(cmds, m.planSizeCmd(ps.ID, p.Name, targetVersion(p)))
 			}
 		}
 	}
@@ -610,11 +598,7 @@ func (m Model) openInfo() (Model, tea.Cmd) {
 	m.infoDoc = nil
 	m.infoLocal = false
 	m.infoErr = ""
-	regURL := ""
-	if ps := m.state.Active(); ps != nil {
-		regURL = ps.RegistryURL
-	}
-	return m, infoCmd(m.state.ActivePrefixID, r.Name, regURL, r.Installed())
+	return m, m.infoCmd(m.state.ActivePrefixID, r.Name, r.Installed())
 }
 
 // openVersions shows the version history; when the current doc carries no
@@ -626,16 +610,8 @@ func (m Model) openVersions() (Model, tea.Cmd) {
 		m.positionVersionCursor()
 		return m, nil
 	}
-	regURL := ""
-	if ps := m.state.Active(); ps != nil {
-		regURL = ps.RegistryURL
-	}
-	if regURL == "" {
-		m.infoErr = "no registry configured for this prefix — version history unavailable"
-		return m, nil
-	}
 	m.screen = ScreenVersions
-	return m, versionsCmd(regURL, m.infoName)
+	return m, m.versionsCmd(m.state.ActivePrefixID, m.infoName)
 }
 
 // positionVersionCursor puts the cursor on the installed version, else the
@@ -679,10 +655,10 @@ func (m *Model) pinVersion() {
 		return
 	}
 	if p.Installed() {
-		p.Mark = state.MarkUpgrade
+		p.Mark = domain.MarkUpgrade
 		m.notice = fmt.Sprintf("%s marked for upgrade to %s", p.Name, v)
 	} else {
-		p.Mark = state.MarkInstall
+		p.Mark = domain.MarkInstall
 		m.notice = fmt.Sprintf("%s marked for install at %s", p.Name, v)
 	}
 	p.TargetVersion = v
@@ -697,7 +673,7 @@ func (m Model) openReadme() (Model, tea.Cmd) {
 	found := false
 	if ps := m.state.Active(); ps != nil {
 		if p := ps.Packages[m.infoName]; p != nil && p.Installed() {
-			text, found = npmcmd.Readme(m.state.ActivePrefixID, m.infoName)
+			text, found = m.eco.Readme(ecosystem.Environment{ID: m.state.ActivePrefixID}, m.infoName)
 		}
 	}
 	if !found && m.infoDoc != nil && m.infoDoc.Readme != "" {
@@ -707,17 +683,9 @@ func (m Model) openReadme() (Model, tea.Cmd) {
 		m.setReadme(text)
 		return m, nil
 	}
-	regURL := ""
-	if ps := m.state.Active(); ps != nil {
-		regURL = ps.RegistryURL
-	}
-	if regURL == "" {
-		m.setReadme("")
-		return m, nil
-	}
 	m.screen = ScreenReadme
 	m.readmeLines = []string{"loading…"}
-	return m, readmeFetchCmd(regURL, m.infoName)
+	return m, m.readmeFetchCmd(m.state.ActivePrefixID, m.infoName)
 }
 
 func (m *Model) setReadme(text string) {
@@ -730,59 +698,21 @@ func (m *Model) setReadme(text string) {
 	m.screen = ScreenReadme
 }
 
-// buildApplyBatches groups pending marks into npm invocations by operation
-// kind, run with the target prefix's own node + npm.
-func (m Model) buildApplyBatches() [][]string {
+// buildIntent collects the active environment's pending marks into a
+// manager-agnostic intent for the ecosystem resolver.
+func (m Model) buildIntent() ecosystem.Intent {
 	installs, removals, upgrades := m.planRows()
-	specs := func(rows []*state.PkgState) []string {
-		out := make([]string, 0, len(rows))
-		for _, p := range rows {
-			if v := targetVersion(p); v != "" {
-				out = append(out, p.Name+"@"+v)
-				continue
-			}
-			out = append(out, p.Name)
-		}
-		return out
+	items := make([]ecosystem.MarkedItem, 0, len(installs)+len(upgrades)+len(removals))
+	for _, p := range installs {
+		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpInstall, Name: p.Name, Version: targetVersion(p)})
 	}
-	var batches [][]string
-	if len(installs) > 0 {
-		batches = append(batches, append([]string{"i", "-g"}, specs(installs)...))
+	for _, p := range upgrades {
+		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpUpgrade, Name: p.Name, Version: targetVersion(p)})
 	}
-	if len(upgrades) > 0 {
-		batches = append(batches, append([]string{"i", "-g"}, specs(upgrades)...))
+	for _, p := range removals {
+		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpRemove, Name: p.Name})
 	}
-	if len(removals) > 0 {
-		names := make([]string, 0, len(removals))
-		for _, p := range removals {
-			names = append(names, p.Name)
-		}
-		batches = append(batches, append([]string{"rm", "-g"}, names...))
-	}
-	return batches
-}
-
-// prefixWritable reports whether the prefix is writable. Missing directories
-// are allowed — npm creates them on first install; an existing directory that
-// the current user cannot write to is not.
-func prefixWritable(prefixID string) bool {
-	for _, d := range []string{
-		filepath.Join(prefixID, "lib", "node_modules"),
-		filepath.Join(prefixID, "bin"),
-	} {
-		fi, err := os.Stat(d)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		f, err := os.CreateTemp(d, ".npmitude-write-*")
-		if err != nil {
-			return false
-		}
-		name := f.Name()
-		_ = f.Close()
-		_ = os.Remove(name)
-	}
-	return true
+	return ecosystem.Intent{Env: ecosystem.Environment{ID: m.state.ActivePrefixID}, Items: items}
 }
 
 // startApply begins the single-flight apply run: it snapshots versions for
@@ -792,11 +722,17 @@ func (m Model) startApply() (Model, tea.Cmd) {
 		m.notice = "apply already in progress"
 		return m, nil
 	}
-	if !prefixWritable(m.state.ActivePrefixID) {
-		m.notice = fmt.Sprintf("prefix %s is not writable — make it writable or switch environments before applying", displayPath(m.state.ActivePrefixID))
+	envID := m.state.ActivePrefixID
+	if !m.eco.Writable(ecosystem.Environment{ID: envID}) {
+		m.notice = fmt.Sprintf("prefix %s is not writable — make it writable or switch environments before applying", displayPath(envID))
 		return m, nil
 	}
-	batches := m.buildApplyBatches()
+	plan, _, err := m.eco.Resolve(m.buildIntent())
+	if err != nil {
+		m.notice = "cannot resolve apply plan: " + err.Error()
+		return m, nil
+	}
+	batches := plan.Batches
 	if len(batches) == 0 {
 		m.screen = ScreenList
 		return m, nil
@@ -807,11 +743,11 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	m.applyFailed = 0
 	m.applyDone = false
 	m.applyLog = nil
-	m.applyCurrent = "npm " + strings.Join(batches[0], " ")
+	m.applyCurrent = batches[0].Label
 	m.applyFrom = map[string]string{}
 	if ps := m.state.Active(); ps != nil {
 		for _, p := range ps.Packages {
-			if p.Mark != state.MarkNone {
+			if p.Mark != domain.MarkNone {
 				m.applyFrom[p.Name] = p.InstalledVersion
 			}
 		}
@@ -821,23 +757,25 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// nextBatchCmd runs the queued batch and captures its combined output so the
-// apply screen can show npm's raw log while the interface stays up. It stores
-// the batch's cancel func so ctrl+c can abort a running invocation.
+// nextBatchCmd runs the queued batch through the ecosystem and captures its
+// combined raw output so the apply screen can show the manager's log while
+// the interface stays up. It stores the batch's cancel func so ctrl+c can
+// abort a running invocation.
 func (m *Model) nextBatchCmd() tea.Cmd {
 	if m.applyBatchIdx >= len(m.applyBatches) {
 		return m.finishApplyCmd()
 	}
-	node, npmCLI := npmcmd.NodeAndNPM(m.state.ActivePrefixID)
-	args := append([]string{npmCLI}, m.applyBatches[m.applyBatchIdx]...)
+	batch := m.applyBatches[m.applyBatchIdx]
 	idx := m.applyBatchIdx
-	cmdLine := "npm " + strings.Join(m.applyBatches[idx], " ")
+	cmdLine := batch.Label
+	envID := m.state.ActivePrefixID
+	eco := m.eco
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	m.applyCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
-		out, err := exec.CommandContext(ctx, node, args...).CombinedOutput()
-		return applyBatchMsg{idx: idx, cmdLine: cmdLine, output: string(out), err: err}
+		out, err := eco.Execute(ctx, ecosystem.Environment{ID: envID}, batch)
+		return applyBatchMsg{idx: idx, cmdLine: cmdLine, output: out, err: err}
 	}
 }
 
@@ -865,19 +803,15 @@ func (m *Model) appendApplyLog(cmdLine, output string, err error) {
 // assuming the plan succeeded.
 func (m Model) finishApplyCmd() tea.Cmd {
 	id := m.state.ActivePrefixID
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		parsed, err := npmcmd.LSGlobal(ctx, id)
+		list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: id})
 		if err != nil {
 			return applyReloadMsg{prefixID: id, err: err}
 		}
-		regURL, _ := npmcmd.GetRegistry(ctx, id)
-		pkgs := make(map[string]*state.PkgState, len(parsed))
-		for name, p := range parsed {
-			pkgs[name] = &state.PkgState{Name: name, InstalledVersion: p.Version, Broken: p.Broken, Origin: state.OriginInstalled}
-		}
-		return applyReloadMsg{prefixID: id, registryURL: regURL, pkgs: pkgs}
+		return applyReloadMsg{prefixID: id, pkgs: toPkgStates(list)}
 	}
 }
 
@@ -889,19 +823,19 @@ func (m *Model) reconcileMarks() {
 		return
 	}
 	for name, p := range ps.Packages {
-		if p.Mark == state.MarkNone {
+		if p.Mark == domain.MarkNone {
 			continue
 		}
 		switch p.Mark {
-		case state.MarkInstall:
+		case domain.MarkInstall:
 			if p.Installed() {
 				m.state.Revert(ps.ID, name)
 			}
-		case state.MarkRemove:
+		case domain.MarkRemove:
 			if !p.Installed() {
 				m.state.Revert(ps.ID, name)
 			}
-		case state.MarkUpgrade:
+		case domain.MarkUpgrade:
 			from := m.applyFrom[name]
 			if (from != "" && p.InstalledVersion != from) ||
 				(p.TargetVersion != "" && p.InstalledVersion == p.TargetVersion) {
@@ -944,34 +878,24 @@ func measureSizesCmd(prefixID string, names []string) tea.Cmd {
 	}
 }
 
-// loadPrefixCmd spawns the prefix's own npm to list its global packages and
-// read its configured registry URL.
-func loadPrefixCmd(prefixID string) tea.Cmd {
+// loadEnvCmd lists the environment's installed packages via the ecosystem.
+func (m Model) loadEnvCmd(prefixID string) tea.Cmd {
+	eco := m.eco
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		parsed, err := npmcmd.LSGlobal(ctx, prefixID)
+		list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: prefixID})
 		if err != nil {
-			return loadPrefixMsg{prefixID: prefixID, err: err}
+			return loadEnvMsg{prefixID: prefixID, err: err}
 		}
-		regURL, _ := npmcmd.GetRegistry(ctx, prefixID) // non-fatal; offline still works
-		pkgs := make(map[string]*state.PkgState, len(parsed))
-		for name, p := range parsed {
-			pkgs[name] = &state.PkgState{
-				Name:             name,
-				InstalledVersion: p.Version,
-				Broken:           p.Broken,
-				Origin:           state.OriginInstalled,
-			}
-		}
-		return loadPrefixMsg{prefixID: prefixID, registryURL: regURL, pkgs: pkgs}
+		return loadEnvMsg{prefixID: prefixID, pkgs: toPkgStates(list)}
 	}
 }
 
 // applyLoaded merges freshly loaded packages into the prefix state,
 // preserving pending marks and cached latest versions of packages that are
 // still present.
-func (m *Model) applyLoaded(prefixID, registryURL string, pkgs map[string]*state.PkgState) {
+func (m *Model) applyLoaded(prefixID string, pkgs map[string]*domain.PkgState) {
 	old := m.state.Prefixes[prefixID]
 	if old != nil {
 		for name, np := range pkgs {
@@ -982,7 +906,7 @@ func (m *Model) applyLoaded(prefixID, registryURL string, pkgs map[string]*state
 			}
 		}
 	}
-	m.state.Prefixes[prefixID] = &state.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true, RegistryURL: registryURL}
+	m.state.Prefixes[prefixID] = &domain.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
 	if m.searchActive && prefixID == m.state.ActivePrefixID {
 		m.resetSearch() // the reload replaced the rows the search view referenced
 	}
@@ -990,7 +914,7 @@ func (m *Model) applyLoaded(prefixID, registryURL string, pkgs map[string]*state
 
 // visibleRows returns the rows to render for the active prefix, with the
 // active filter and any transient local match applied.
-func (m Model) visibleRows() []*state.PkgState {
+func (m Model) visibleRows() []*domain.PkgState {
 	ps := m.state.Active()
 	if ps == nil {
 		return nil
@@ -1000,22 +924,22 @@ func (m Model) visibleRows() []*state.PkgState {
 		// Registry results keep the order returned by the registry (pages are
 		// appended); they are never re-sorted. Marked leftovers from earlier
 		// queries and installed matches follow, name-sorted for stability.
-		kept := make([]*state.PkgState, 0, len(rows))
+		kept := make([]*domain.PkgState, 0, len(rows))
 		seen := make(map[string]bool, len(m.searchOrder))
 		for _, name := range m.searchOrder {
-			if p := ps.Packages[name]; p != nil && p.Origin == state.OriginSearch {
+			if p := ps.Packages[name]; p != nil && p.Origin == domain.OriginSearch {
 				kept = append(kept, p)
 				seen[name] = true
 			}
 		}
-		var leftovers []*state.PkgState
-		var installed []*state.PkgState
+		var leftovers []*domain.PkgState
+		var installed []*domain.PkgState
 		for _, r := range rows {
 			if seen[r.Name] {
 				continue
 			}
 			switch {
-			case r.Origin == state.OriginSearch:
+			case r.Origin == domain.OriginSearch:
 				leftovers = append(leftovers, r)
 			case r.Installed() && m.searchNames[r.Name]:
 				installed = append(installed, r)
@@ -1026,9 +950,9 @@ func (m Model) visibleRows() []*state.PkgState {
 		rows = append(append(kept, leftovers...), installed...)
 	}
 	if m.filterPred != nil {
-		kept := make([]*state.PkgState, 0, len(rows))
+		kept := make([]*domain.PkgState, 0, len(rows))
 		for _, r := range rows {
-			v := filter.View(r.Name, r.Installed(), r.Upgradable(), r.Broken)
+			v := filter.View(r.Name, r.Installed(), r.Upgradable(), r.Unhealthy)
 			if m.filterPred(v) {
 				kept = append(kept, r)
 			}
@@ -1038,7 +962,7 @@ func (m Model) visibleRows() []*state.PkgState {
 	if m.prompt != nil && m.prompt.kind == PromptLocal {
 		pat := strings.ToLower(m.prompt.input.Value())
 		if pat != "" {
-			kept := make([]*state.PkgState, 0, len(rows))
+			kept := make([]*domain.PkgState, 0, len(rows))
 			for _, r := range rows {
 				if r.Installed() && strings.Contains(strings.ToLower(r.Name), pat) {
 					kept = append(kept, r)
@@ -1048,13 +972,13 @@ func (m Model) visibleRows() []*state.PkgState {
 		}
 	}
 	if !m.searchActive {
-		state.SortRows(rows, m.state.SortKey) // sorting applies to the local list only
+		domain.SortRows(rows, m.state.SortKey) // sorting applies to the local list only
 	}
 	return rows
 }
 
 // selectedRow returns the package under the cursor, or nil.
-func (m *Model) selectedRow() *state.PkgState {
+func (m *Model) selectedRow() *domain.PkgState {
 	rows := m.visibleRows()
 	if m.cursor >= len(rows) {
 		return nil
@@ -1071,9 +995,9 @@ func (m *Model) markInstallOrUpgrade() {
 	}
 	switch {
 	case !r.Installed():
-		m.state.SetMark(m.state.ActivePrefixID, r.Name, state.MarkInstall)
+		m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkInstall)
 	case r.Upgradable():
-		m.state.SetMark(m.state.ActivePrefixID, r.Name, state.MarkUpgrade)
+		m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkUpgrade)
 	case r.LatestVersion == "":
 		m.notice = "latest version unknown for " + r.Name + " — press u to refresh"
 	default:
@@ -1087,7 +1011,7 @@ func (m *Model) markRemove() {
 	if r == nil || !r.Installed() {
 		return
 	}
-	m.state.SetMark(m.state.ActivePrefixID, r.Name, state.MarkRemove)
+	m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkRemove)
 }
 
 // markHold marks the selected row as held, excluding it from bulk upgrades.
@@ -1096,7 +1020,7 @@ func (m *Model) markHold() {
 	if r == nil {
 		return
 	}
-	m.state.SetMark(m.state.ActivePrefixID, r.Name, state.MarkHold)
+	m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkHold)
 }
 
 // markRevert clears any pending mark on the selected row.

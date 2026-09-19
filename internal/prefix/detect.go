@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
 )
 
 // Info describes one detected Node installation prefix.
@@ -127,7 +127,7 @@ func Detect(ctx context.Context, cfg Config) ([]Info, error) {
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		if c := state.CompareVersions(out[i].NodeVersion, out[j].NodeVersion); c != 0 {
+		if c := domain.CompareVersions(out[i].NodeVersion, out[j].NodeVersion); c != 0 {
 			return c > 0
 		}
 		return out[i].ID < out[j].ID

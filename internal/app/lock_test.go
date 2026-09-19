@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 	"npmitude/internal/lock"
-	"npmitude/internal/state"
 )
 
 // foreignHolder acquires a live lock (this test process is alive, so its
@@ -23,10 +24,10 @@ func foreignHolder(t *testing.T, stateDir, prefixID string) {
 func TestStartupRefusesLockedDefault(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
-	m := New()
+	m := New(newStubEco())
 	foreignHolder(t, dir, "/p")
 
-	nextRaw, cmd := m.Update(activePrefixMsg{prefixID: "/p"})
+	nextRaw, cmd := m.Update(discoverMsg{envs: []ecosystem.Environment{{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}})
 	next := nextRaw.(Model)
 	if cmd != nil {
 		t.Fatal("no load command should start for a locked default environment")
@@ -45,15 +46,15 @@ func TestStartupRefusesLockedDefault(t *testing.T) {
 func TestSwitchRefusesLockedEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
-	m := New()
+	m := New(newStubEco())
 	foreignHolder(t, dir, "/a")
 	if err := m.locks.Acquire("/b"); err != nil {
 		t.Fatal(err)
 	}
 	m.state.ActivePrefixID = "/b"
-	m.state.Prefixes["/b"] = &state.PrefixState{ID: "/b", Packages: map[string]*state.PkgState{}, Loaded: true}
+	m.state.Prefixes["/b"] = &domain.PrefixState{ID: "/b", Packages: map[string]*domain.PkgState{}, Loaded: true}
 
-	if cmd := m.switchPrefix("/a"); cmd != nil {
+	if cmd := m.switchEnv("/a"); cmd != nil {
 		t.Fatal("switch to a locked environment must not load")
 	}
 	if m.state.ActivePrefixID != "/b" {
@@ -67,7 +68,7 @@ func TestSwitchRefusesLockedEnv(t *testing.T) {
 func TestQuitReleasesLocks(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
-	m := New()
+	m := New(newStubEco())
 	if err := m.locks.Acquire("/b"); err != nil {
 		t.Fatal(err)
 	}

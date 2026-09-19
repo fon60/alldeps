@@ -5,11 +5,13 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
 )
 
 const (
@@ -96,19 +98,20 @@ func (m Model) pickerBody() string {
 		bodyH = 1
 	}
 	lines := []string{titleStyle.Render("Environments"), ""}
-	for i, p := range m.prefixes {
+	for i, e := range m.envs {
 		marker := "  "
-		if p.ID == m.state.ActivePrefixID {
+		if e.ID == m.state.ActivePrefixID {
 			marker = "* "
 		}
 		suffix := ""
-		if m.pickerLocked[p.ID] {
+		if m.pickerLocked[e.ID] {
 			suffix = "  (locked)"
 		}
-		line := pickerRow(i == m.pickerCursor, marker, p.Source, p.NodeVersion, p.PkgCount, displayPath(p.ID)+suffix)
+		count, _ := strconv.Atoi(e.Meta[ecosystem.MetaPkgCount])
+		line := pickerRow(i == m.pickerCursor, marker, e.Meta[ecosystem.MetaSource], e.Rank, count, displayPath(e.ID)+suffix)
 		lines = append(lines, line)
 	}
-	if len(m.prefixes) == 0 {
+	if len(m.envs) == 0 {
 		lines = append(lines, "scanning…")
 	}
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
@@ -189,7 +192,7 @@ func (m Model) infoBody() string {
 	}
 	lines := []string{titleStyle.Render("Info — " + m.infoName), ""}
 
-	var row *state.PkgState
+	var row *domain.PkgState
 	if ps := m.state.Active(); ps != nil {
 		row = ps.Packages[m.infoName]
 	}
@@ -315,7 +318,7 @@ func (m Model) versionsBody() string {
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func (m Model) selectedInfoRow() *state.PkgState {
+func (m Model) selectedInfoRow() *domain.PkgState {
 	if ps := m.state.Active(); ps != nil {
 		return ps.Packages[m.infoName]
 	}
@@ -528,7 +531,7 @@ func (m Model) listRegion(h int) string {
 	return lipgloss.NewStyle().Width(m.width).Height(h).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-// applyBody renders the full-screen apply view: the raw npm output of every
+// applyBody renders the full-screen apply view: the raw manager output of every
 // batch (auto-scrolled to the bottom) with a what-to-do-next line at the foot.
 func (m Model) applyBody() string {
 	bodyH := m.height - 2
@@ -568,14 +571,14 @@ func (m Model) applyBody() string {
 		lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func sizeCell(r *state.PkgState) string {
+func sizeCell(r *domain.PkgState) string {
 	if r.SizeBytes == nil {
 		return "…"
 	}
 	return humanSize(*r.SizeBytes)
 }
 
-func candidateCell(r *state.PkgState) string {
+func candidateCell(r *domain.PkgState) string {
 	if r.LatestVersion != "" && r.LatestVersion != r.InstalledVersion {
 		return r.LatestVersion
 	}

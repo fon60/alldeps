@@ -1,6 +1,6 @@
-// Package state holds the npmitude application state model (design D4):
+// Package domain holds the npmitude application state model (design D4):
 // everything keyed by environment (prefix path), with pure transition helpers.
-package state
+package domain
 
 import "sort"
 
@@ -36,13 +36,15 @@ func (m Mark) String() string {
 	}
 }
 
-// PkgState is one package row in a prefix's list.
+// PkgState is one package row in a prefix's list. It holds only
+// manager-agnostic facts; manager-specific values (e.g. why the tree is
+// unhealthy) are supplied by the adapter as metadata.
 type PkgState struct {
 	Name             string
 	InstalledVersion string // "" when not installed
 	LatestVersion    string // from registry, TTL-cached; "" when unknown
 	SizeBytes        *int64 // background-measured; nil until known
-	Broken           bool   // invalid/missing deps per npm ls
+	Unhealthy        bool   // generic health flag set by the adapter (e.g. broken deps)
 	Origin           Origin
 	Mark             Mark
 	TargetVersion    string // pinned via version screen; "" = latest
@@ -58,11 +60,11 @@ func (p *PkgState) Upgradable() bool {
 	return p.Installed() && p.LatestVersion != "" && p.LatestVersion != p.InstalledVersion
 }
 
-// StateChar is the current-state flag character: b broken, i installed,
-// p available-not-installed. Broken takes precedence over installed.
+// StateChar is the current-state flag character: b unhealthy, i installed,
+// p available-not-installed. Unhealthy takes precedence over installed.
 func (p *PkgState) StateChar() rune {
 	switch {
-	case p.Broken:
+	case p.Unhealthy:
 		return 'b'
 	case p.Installed():
 		return 'i'
@@ -92,14 +94,14 @@ func (p *PkgState) Flag() string {
 	return string(p.StateChar()) + string(p.ActionChar())
 }
 
-// PrefixState is all list state for one environment (one prefix).
+// PrefixState is all list state for one environment (one destination). The
+// ID is adapter-defined; manager-specific facts about the environment live in
+// the adapter, not here.
 type PrefixState struct {
-	ID          string // absolute prefix path; the environment id
-	NodeVersion string
-	Packages    map[string]*PkgState
-	Loaded      bool
-	SizesKnown  bool
-	RegistryURL string
+	ID         string // environment id, adapter-defined
+	Packages   map[string]*PkgState
+	Loaded     bool
+	SizesKnown bool
 }
 
 // Pkg returns the package row for name, or nil.

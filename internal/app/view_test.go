@@ -11,7 +11,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"npmitude/internal/filter"
-	"npmitude/internal/state"
+	"npmitude/internal/domain"
 )
 
 func TestMain(m *testing.M) {
@@ -192,8 +192,8 @@ func TestStatusLinePendingCountUpdates(t *testing.T) {
 		t.Fatalf("expected 0 pending initially:\n%s", out)
 	}
 
-	m.state.SetMark("/p", "alpha", state.MarkInstall)
-	m.state.SetMark("/p", "beta", state.MarkRemove)
+	m.state.SetMark("/p", "alpha", domain.MarkInstall)
+	m.state.SetMark("/p", "beta", domain.MarkRemove)
 	out = render80x24(m)
 	if !strings.Contains(out, "2 pending") {
 		t.Fatalf("expected 2 pending after marking:\n%s", out)

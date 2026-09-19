@@ -1,4 +1,4 @@
-package state
+package domain
 
 import "testing"
 
@@ -67,7 +67,7 @@ func TestSortBySize(t *testing.T) {
 func TestSortByState(t *testing.T) {
 	rows := []*PkgState{
 		{Name: "p1", InstalledVersion: "1.0.0"},               // i*
-		{Name: "b1", InstalledVersion: "1.0.0", Broken: true}, // b*
+		{Name: "b1", InstalledVersion: "1.0.0", Unhealthy: true}, // b*
 		{Name: "s1"}, // p*
 		{Name: "i1", InstalledVersion: "1.0.0", Mark: MarkInstall}, // i+
 	}

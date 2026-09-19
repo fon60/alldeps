@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/registry"
-	"npmitude/internal/state"
+	"npmitude/internal/ecosystem"
+	"npmitude/internal/domain"
 )
 
 func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
 	m.state.Prefixes["/p"].Packages["alpha"].LatestVersion = "1.0.0"
 
-	hits := []registry.SearchHit{
+	hits := []ecosystem.Hit{
 		{Name: "alpha", Version: "2.0.0", Description: "installed one"},
 		{Name: "brand-new", Version: "3.0.0", Description: "fresh"},
 	}
@@ -21,7 +21,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 
 	ps := m.state.Prefixes["/p"]
 	alpha := ps.Packages["alpha"]
-	if alpha.Origin != state.OriginInstalled {
+	if alpha.Origin != domain.OriginInstalled {
 		t.Fatalf("installed row must stay authoritative, origin = %v", alpha.Origin)
 	}
 	if alpha.InstalledVersion == "" {
@@ -31,7 +31,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 		t.Fatalf("package count = %d, want 2 (no duplicate for alpha)", len(ps.Packages))
 	}
 	fresh := ps.Packages["brand-new"]
-	if fresh == nil || fresh.Origin != state.OriginSearch || fresh.Flag() != "p*" {
+	if fresh == nil || fresh.Origin != domain.OriginSearch || fresh.Flag() != "p*" {
 		t.Fatalf("new search row wrong: %+v", fresh)
 	}
 	if fresh.LatestVersion != "3.0.0" || fresh.Description != "fresh" {
@@ -44,7 +44,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 
 func TestSearchModeShowsOnlyResults(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
-	hits := []registry.SearchHit{{Name: "gamma", Version: "1.0.0"}}
+	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
 	rows := m.visibleRows()
@@ -59,7 +59,7 @@ func TestSearchModeShowsOnlyResults(t *testing.T) {
 
 func TestSearchInstalledMatchShownAsInstalledRow(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	hits := []registry.SearchHit{
+	hits := []ecosystem.Hit{
 		{Name: "alpha", Version: "9.9.9"},
 		{Name: "gamma", Version: "1.0.0"},
 	}
@@ -70,7 +70,7 @@ func TestSearchInstalledMatchShownAsInstalledRow(t *testing.T) {
 		t.Fatalf("expected installed match + new result, got %d rows", len(rows))
 	}
 	for _, r := range rows {
-		if r.Name == "alpha" && r.Origin != state.OriginInstalled {
+		if r.Name == "alpha" && r.Origin != domain.OriginInstalled {
 			t.Fatal("installed match must render as the authoritative installed row")
 		}
 	}
@@ -81,12 +81,12 @@ func TestSearchInstalledMatchShownAsInstalledRow(t *testing.T) {
 
 func TestClearSearchRestoresInstalledList(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
-	hits := []registry.SearchHit{
+	hits := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
 	}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
-	m.state.SetMark("/p", "delta", state.MarkInstall)
+	m.state.SetMark("/p", "delta", domain.MarkInstall)
 
 	m.clearSearch()
 
@@ -97,7 +97,7 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 	if _, ok := ps.Packages["gamma"]; ok {
 		t.Fatal("unmarked search row must be dropped on clear")
 	}
-	if d := ps.Packages["delta"]; d == nil || d.Mark != state.MarkInstall {
+	if d := ps.Packages["delta"]; d == nil || d.Mark != domain.MarkInstall {
 		t.Fatalf("marked search row must survive the clear: %+v", d)
 	}
 	rows := m.visibleRows()
@@ -112,7 +112,7 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 
 func TestEscKeyClearsSearch(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	hits := []registry.SearchHit{{Name: "gamma", Version: "1.0.0"}}
+	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
 	m = m.step(t, keyMsg(t, "esc"))
@@ -130,7 +130,7 @@ func TestEscKeyClearsSearch(t *testing.T) {
 
 func TestLocalMatchRefusedDuringSearch(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	hits := []registry.SearchHit{{Name: "gamma", Version: "1.0.0"}}
+	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
 	m = m.step(t, keyMsg(t, "l"))
@@ -146,17 +146,17 @@ func TestLocalMatchRefusedDuringSearch(t *testing.T) {
 func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p")
 	ps := m.state.Prefixes["/p"]
-	ps.Packages["foo-old"] = &state.PkgState{Name: "foo-old", Origin: state.OriginSearch, LatestVersion: "1.0.0"}
-	marked := &state.PkgState{Name: "foo-marked", Origin: state.OriginSearch, LatestVersion: "2.0.0", Mark: state.MarkInstall}
+	ps.Packages["foo-old"] = &domain.PkgState{Name: "foo-old", Origin: domain.OriginSearch, LatestVersion: "1.0.0"}
+	marked := &domain.PkgState{Name: "foo-marked", Origin: domain.OriginSearch, LatestVersion: "2.0.0", Mark: domain.MarkInstall}
 	ps.Packages["foo-marked"] = marked
 
-	hits := []registry.SearchHit{{Name: "bar-new", Version: "9.0.0"}}
+	hits := []ecosystem.Hit{{Name: "bar-new", Version: "9.0.0"}}
 	m.applySearchResults("/p", "bar", 0, hits, 0)
 
 	if _, ok := ps.Packages["foo-old"]; ok {
 		t.Fatal("unmarked search row should be replaced by the new search")
 	}
-	if got := ps.Packages["foo-marked"]; got == nil || got.Mark != state.MarkInstall {
+	if got := ps.Packages["foo-marked"]; got == nil || got.Mark != domain.MarkInstall {
 		t.Fatalf("marked search row must survive: %+v", got)
 	}
 	if _, ok := ps.Packages["bar-new"]; !ok {
@@ -166,7 +166,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 
 func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.state.SetMark("/p", "alpha", state.MarkRemove)
+	m.state.SetMark("/p", "alpha", domain.MarkRemove)
 	m.state.FilterText = "~i"
 	before := len(m.state.Prefixes["/p"].Packages)
 
@@ -176,7 +176,7 @@ func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	if len(m.state.Prefixes["/p"].Packages) != before {
 		t.Fatal("rows changed after failed search")
 	}
-	if m.state.Prefixes["/p"].Packages["alpha"].Mark != state.MarkRemove {
+	if m.state.Prefixes["/p"].Packages["alpha"].Mark != domain.MarkRemove {
 		t.Fatal("mark lost after failed search")
 	}
 	if m.state.FilterText != "~i" {
@@ -209,7 +209,7 @@ func TestSearchKeyOpensPrompt(t *testing.T) {
 
 func TestSearchPaginationLoadsNextPage(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	page1 := []registry.SearchHit{
+	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
 	}
@@ -222,7 +222,7 @@ func TestSearchPaginationLoadsNextPage(t *testing.T) {
 		t.Fatalf("pagination state = %d/%d, want 2/4", m.searchFetched, m.searchTotal)
 	}
 
-	page2 := []registry.SearchHit{
+	page2 := []ecosystem.Hit{
 		{Name: "epsilon", Version: "3.0.0"},
 		{Name: "zeta", Version: "4.0.0"},
 	}
@@ -247,8 +247,7 @@ func TestSearchPaginationLoadsNextPage(t *testing.T) {
 
 func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.state.Prefixes["/p"].RegistryURL = "http://127.0.0.1:9" // nothing listens; cmd is only inspected
-	page1 := []registry.SearchHit{
+	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
 	}
@@ -282,7 +281,7 @@ func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 
 func TestSearchPageFailureKeepsLoadedResults(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	page1 := []registry.SearchHit{{Name: "gamma", Version: "1.0.0"}}
+	page1 := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "g", 0, page1, 4)
 	m.searchLoading = true
 
@@ -305,7 +304,7 @@ func TestSearchPageFailureKeepsLoadedResults(t *testing.T) {
 
 func TestSearchStatusShowsLoadedOverTotal(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	page1 := []registry.SearchHit{
+	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
 	}
@@ -318,7 +317,7 @@ func TestSearchStatusShowsLoadedOverTotal(t *testing.T) {
 
 func TestSearchResultsKeepRegistryOrder(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	page1 := []registry.SearchHit{
+	page1 := []ecosystem.Hit{
 		{Name: "zeta", Version: "1.0.0"},
 		{Name: "mid", Version: "2.0.0"},
 		{Name: "alpha-x", Version: "3.0.0"},
@@ -334,7 +333,7 @@ func TestSearchResultsKeepRegistryOrder(t *testing.T) {
 		t.Fatalf("page 1 order = %v, want registry order %v (no sorting)", got, want)
 	}
 
-	page2 := []registry.SearchHit{
+	page2 := []ecosystem.Hit{
 		{Name: "omega", Version: "4.0.0"},
 		{Name: "kilo", Version: "5.0.0"},
 	}
@@ -352,7 +351,7 @@ func TestSearchResultsKeepRegistryOrder(t *testing.T) {
 
 func TestSearchStatusHidesLocalSort(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.applySearchResults("/p", "q", 0, []registry.SearchHit{{Name: "zeta"}}, 1)
+	m.applySearchResults("/p", "q", 0, []ecosystem.Hit{{Name: "zeta"}}, 1)
 	out := render80x24(m)
 	if strings.Contains(out, "sort:") {
 		t.Fatalf("status line must not show the local sort during a search:\n%s", out)
