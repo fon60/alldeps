@@ -60,6 +60,9 @@ func newPrompt(kind PromptKind) *promptState {
 
 type Model struct {
 	state           *domain.AppState
+	mode            Mode // global or project scope for this launch
+	projectRoot     string
+	applicable      []string // project mode: applicable manager ids, stable order
 	managers        map[string]ecosystem.Ecosystem
 	activeManagerID string
 	screen          Screen
@@ -134,6 +137,7 @@ func New(eco ecosystem.Ecosystem) Model {
 	}
 	return Model{
 		state:           domain.NewAppState(),
+		mode:            ModeGlobal,
 		managers:        map[string]ecosystem.Ecosystem{eco.ID(): eco},
 		activeManagerID: eco.ID(),
 		envsByManager:   map[string][]ecosystem.Environment{},
@@ -141,6 +145,36 @@ func New(eco ecosystem.Ecosystem) Model {
 		hostname:        host,
 	}
 }
+
+// NewProject builds a project-mode model (design D5): one entry per
+// applicable manager, each bound to its own adapter instance; exactly the
+// first applicable manager starts active. A project with no recognized
+// markers still launches, showing a notice instead of guessing.
+func NewProject(root string, managers map[string]ecosystem.Ecosystem, applicable []string) Model {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	m := Model{
+		state:         domain.NewAppState(),
+		mode:          ModeProject,
+		projectRoot:   root,
+		applicable:    applicable,
+		managers:      managers,
+		envsByManager: map[string][]ecosystem.Environment{},
+		locks:         lock.NewDefault(),
+		hostname:      host,
+	}
+	if len(applicable) > 0 {
+		m.activeManagerID = applicable[0]
+	} else {
+		m.notice = "no recognized package manager for project " + displayPath(root) + " — nothing to manage here"
+	}
+	return m
+}
+
+// isProject reports whether this launch manages a single project directory.
+func (m Model) isProject() bool { return m.mode == ModeProject }
 
 // eco returns the adapter of the active manager.
 func (m Model) eco() ecosystem.Ecosystem { return m.managers[m.activeManagerID] }
@@ -580,12 +614,18 @@ func hasInstallMark(p *domain.PkgState) bool {
 	return false
 }
 
-// liveDests returns every destination known to any manager, sorted.
+// liveDests returns every destination the plan may touch, sorted. In global
+// mode that is every destination of every manager; in project mode only the
+// active adapter's destinations (per-adapter isolation).
 func (m Model) liveDests() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, ids := range m.managerIDs() {
-		for _, e := range m.envsByManager[ids] {
+	ids := m.managerIDs()
+	if m.isProject() {
+		ids = []string{m.activeManagerID}
+	}
+	for _, id := range ids {
+		for _, e := range m.envsByManager[id] {
 			if !seen[e.ID] {
 				seen[e.ID] = true
 				out = append(out, e.ID)
@@ -606,9 +646,11 @@ type planGroup struct {
 }
 
 // planGroups derives the ordered (destination, manager) groups of all pending
-// marks across every live destination and manager. A group whose destination
-// carries marks of two different managers is flagged invalid (spec:
-// one-manager-per-destination guard).
+// marks across every live destination and manager. In project mode only the
+// active adapter's marks participate (per-adapter isolation: a plan built
+// under one adapter never carries another adapter's operations). A group
+// whose destination carries marks of two different managers is flagged
+// invalid (spec: one-manager-per-destination guard).
 func (m Model) planGroups() []planGroup {
 	var ops []domain.Op
 	for _, dest := range m.liveDests() {
@@ -619,6 +661,9 @@ func (m Model) planGroups() []planGroup {
 		for _, p := range ps.Rows() {
 			for mgr, entry := range p.Marks {
 				if entry.Mark == domain.MarkHold || entry.Mark == domain.MarkNone {
+					continue
+				}
+				if m.isProject() && mgr != m.activeManagerID {
 					continue
 				}
 				ops = append(ops, domain.Op{Destination: dest, Manager: mgr, Name: p.Name, Mark: entry.Mark, Version: entry.TargetVersion})
@@ -1055,13 +1100,15 @@ type sizesDoneMsg struct {
 }
 
 // measureSizesCmd walks each package directory in the background and emits a
-// sizesMsg per package as it completes, so rows fill in progressively.
-func measureSizesCmd(prefixID string, names []string) tea.Cmd {
+// sizesMsg per package as it completes, so rows fill in progressively. dirOf
+// maps a package name to its on-disk directory (layout is destination-kind
+// dependent: global prefix vs project module dir).
+func measureSizesCmd(prefixID string, names []string, dirOf func(name string) string) tea.Cmd {
 	ch := make(chan tea.Msg, len(names)+1)
 	go func() {
 		defer close(ch)
 		for _, name := range names {
-			b, err := sizes.Measure(sizes.PackageDir(prefixID, name))
+			b, err := sizes.Measure(dirOf(name))
 			if err != nil {
 				continue
 			}

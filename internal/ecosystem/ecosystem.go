@@ -23,6 +23,11 @@ const (
 	MetaActive   = "active"    // "1" when the environment is the manager's active one
 )
 
+// MetaVariant is the DetectProject meta key carrying the tool variant a
+// project uses (for the Node family: "npm", "yarn", or "pnpm"). When present,
+// it becomes the applicable manager id instead of the adapter's own id.
+const MetaVariant = "variant"
+
 // Environment is a concrete destination this manager can operate on. The ID
 // is opaque and adapter-defined (for npm it is the absolute Node prefix
 // path); Rank is a comparable ordering key used for display/ordering; Meta

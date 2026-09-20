@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 	"npmitude/internal/domain"
 	"npmitude/internal/ecosystem"
+	"npmitude/internal/sizes"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -76,7 +78,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for name := range msg.pkgs {
 			names = append(names, name)
 		}
-		cmds := []tea.Cmd{measureSizesCmd(msg.prefixID, names)}
+		dirOf := func(name string) string { return sizes.PackageDir(msg.prefixID, name) }
+		if m.isProject() {
+			// A project environment id is the module directory itself.
+			dirOf = func(name string) string { return filepath.Join(msg.prefixID, name) }
+		}
+		cmds := []tea.Cmd{measureSizesCmd(msg.prefixID, names, dirOf)}
 		if len(names) > 0 {
 			cmds = append(cmds, m.checkOutdatedCmd(msg.prefixID, names))
 		}
@@ -475,7 +482,9 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // changes only which mark-set is editable and which adapter executes;
 // installed state (shared per destination) and all pending marks are kept.
 // Destinations of the new manager that were never loaded start loading now —
-// already-loaded ones are not re-fetched.
+// already-loaded ones are not re-fetched. In project mode each adapter owns
+// its own destination, so switching also moves the environment lock from the
+// old adapter's destinations to the new one's (acquired before release).
 func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	ids := m.managerIDs()
 	switch msg.String() {
@@ -492,7 +501,26 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.managerCursor < len(ids) {
-			m.activeManagerID = ids[m.managerCursor]
+			id := ids[m.managerCursor]
+			if id == m.activeManagerID {
+				m.screen = ScreenList
+				return m, nil
+			}
+			if m.isProject() && m.locks != nil {
+				for _, e := range m.envsByManager[id] {
+					if err := m.locks.Acquire(e.ID); err != nil {
+						m.notice = heldNotice(e.ID, err)
+						return m, nil
+					}
+				}
+			}
+			old := m.activeManagerID
+			m.activeManagerID = id
+			if m.isProject() && m.locks != nil {
+				for _, e := range m.envsByManager[old] {
+					m.locks.Release(e.ID)
+				}
+			}
 			m.screen = ScreenList
 			return m, m.loadAllEnvsCmd()
 		}

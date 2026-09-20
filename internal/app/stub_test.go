@@ -28,6 +28,8 @@ type stubEco struct {
 	listCalls   int
 	lockCalls   []string // env IDs passed to Lock, in order
 	released    []string // env IDs released through a returned handle
+	detectFn    func(root string) (bool, ecosystem.Meta)
+	caps        *ecosystem.Caps
 }
 
 func newStubEco() *stubEco { return &stubEco{writable: true} }
@@ -116,9 +118,19 @@ func (s *stubEco) Lock(env ecosystem.Environment) (ecosystem.LockHandle, error) 
 	return stubLock{owner: s, envID: env.ID}, nil
 }
 
-func (s *stubEco) DetectProject(root string) (bool, ecosystem.Meta) { return false, nil }
+func (s *stubEco) DetectProject(root string) (bool, ecosystem.Meta) {
+	if s.detectFn != nil {
+		return s.detectFn(root)
+	}
+	return false, nil
+}
 
-func (s *stubEco) Capabilities() ecosystem.Caps { return ecosystem.Caps{GlobalScope: true} }
+func (s *stubEco) Capabilities() ecosystem.Caps {
+	if s.caps != nil {
+		return *s.caps
+	}
+	return ecosystem.Caps{GlobalScope: true}
+}
 
 func (s *stubEco) LatestVersions(ctx context.Context, env ecosystem.Environment, names []string) (map[string]string, int, error) {
 	if s.latestErr != nil {

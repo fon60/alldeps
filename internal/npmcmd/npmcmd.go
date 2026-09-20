@@ -121,8 +121,21 @@ func NodeAndNPM(prefixID string) (node, npmCLI string) {
 // stdout. A non-zero exit (e.g. ELSPROBLEMS) is not an error as long as
 // stdout was produced; only spawn/execution failures are.
 func RunNPMJSON(ctx context.Context, prefixID string, args ...string) ([]byte, error) {
+	return runNPMJSON(ctx, prefixID, "", args...)
+}
+
+// RunNPMJSONIn is RunNPMJSON with the npm process rooted at workdir, so
+// project-scoped commands (no -g) operate on that directory's tree.
+func RunNPMJSONIn(ctx context.Context, prefixID, workdir string, args ...string) ([]byte, error) {
+	return runNPMJSON(ctx, prefixID, workdir, args...)
+}
+
+func runNPMJSON(ctx context.Context, prefixID, workdir string, args ...string) ([]byte, error) {
 	node, npmCLI := NodeAndNPM(prefixID)
 	cmd := exec.CommandContext(ctx, node, append([]string{npmCLI}, args...)...)
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	var stderr bytes.Buffer
@@ -150,10 +163,26 @@ func LSGlobal(ctx context.Context, prefixID string) (map[string]ParsedPkg, error
 	return ParseLS(data)
 }
 
+// LSProject lists the top-level dependencies of a project directory using the
+// prefix's own npm rooted there (no -g).
+func LSProject(ctx context.Context, prefixID, root string) (map[string]ParsedPkg, error) {
+	data, err := RunNPMJSONIn(ctx, prefixID, root, "ls", "--all", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return ParseLS(data)
+}
+
 // LocalDoc reads an installed package's own package.json into a registry.Doc
 // so the info screen works offline (versions/latest/readme stay empty).
 func LocalDoc(prefixID, name string) (*registry.Doc, error) {
-	data, err := os.ReadFile(filepath.Join(sizes.PackageDir(prefixID, name), "package.json"))
+	return LocalDocAt(sizes.GlobalModuleDir(prefixID), name)
+}
+
+// LocalDocAt is LocalDoc addressed at an explicit module directory (the
+// node_modules dir itself), used for project-scoped environments.
+func LocalDocAt(moduleDir, name string) (*registry.Doc, error) {
+	data, err := os.ReadFile(filepath.Join(moduleDir, name, "package.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +200,12 @@ func LocalDoc(prefixID, name string) (*registry.Doc, error) {
 // Readme reads the installed package's local README file (first candidate
 // that exists), if any.
 func Readme(prefixID, name string) (string, bool) {
-	dir := sizes.PackageDir(prefixID, name)
+	return ReadmeAt(sizes.GlobalModuleDir(prefixID), name)
+}
+
+// ReadmeAt is Readme addressed at an explicit module directory.
+func ReadmeAt(moduleDir, name string) (string, bool) {
+	dir := filepath.Join(moduleDir, name)
 	for _, f := range []string{"README.md", "readme.md", "README.markdown", "README.rst", "README.txt", "README"} {
 		if b, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
 			return string(b), true
@@ -183,7 +217,17 @@ func Readme(prefixID, name string) (string, bool) {
 // GetRegistry asks the prefix's own npm for its configured registry URL
 // (design D3: ask npm itself rather than re-implementing .npmrc resolution).
 func GetRegistry(ctx context.Context, prefixID string) (string, error) {
-	data, err := RunNPMJSON(ctx, prefixID, "config", "get", "registry")
+	return getRegistry(ctx, prefixID, "")
+}
+
+// GetRegistryIn is GetRegistry with npm rooted at workdir, so a project's own
+// .npmrc takes effect.
+func GetRegistryIn(ctx context.Context, prefixID, workdir string) (string, error) {
+	return getRegistry(ctx, prefixID, workdir)
+}
+
+func getRegistry(ctx context.Context, prefixID, workdir string) (string, error) {
+	data, err := RunNPMJSONIn(ctx, prefixID, workdir, "config", "get", "registry")
 	if err != nil {
 		return "", err
 	}

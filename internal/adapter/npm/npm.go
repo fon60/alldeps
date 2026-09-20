@@ -6,6 +6,7 @@ package npm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,10 @@ import (
 	"npmitude/internal/registry"
 )
 
-const envKind = "node-prefix"
+const (
+	envKind        = "node-prefix"
+	projectEnvKind = "node-project"
+)
 
 // opVerbs are npm's operation verbs for each manager-agnostic op kind.
 var opVerbs = map[ecosystem.OpKind][]string{
@@ -29,12 +33,21 @@ var opVerbs = map[ecosystem.OpKind][]string{
 	ecosystem.OpRemove:  {"rm", "-g"},
 }
 
+// projectOpVerbs are the same verbs without -g, for project-scoped operations.
+var projectOpVerbs = map[ecosystem.OpKind][]string{
+	ecosystem.OpInstall: {"i"},
+	ecosystem.OpUpgrade: {"i"},
+	ecosystem.OpRemove:  {"rm"},
+}
+
 // Ecosystem is the npm adapter. It is safe for concurrent use; registry URLs
-// are resolved once per environment and cached.
+// are resolved once per environment and cached. A non-empty projectRoot binds
+// the instance to one project directory (project scope).
 type Ecosystem struct {
-	mu       sync.Mutex
-	regCache map[string]string // envID -> configured registry URL
-	locks    *lock.Manager
+	mu          sync.Mutex
+	regCache    map[string]string // envID -> configured registry URL
+	locks       *lock.Manager
+	projectRoot string
 }
 
 // New returns the npm adapter using the default session lock directory.
@@ -42,15 +55,31 @@ func New() *Ecosystem {
 	return &Ecosystem{regCache: map[string]string{}, locks: lock.NewDefault()}
 }
 
+// NewProject returns an npm adapter bound to one project directory. Its
+// commands run in that directory with the active npm prefix's node + npm.
+func NewProject(root string) *Ecosystem {
+	e := New()
+	e.projectRoot = root
+	return e
+}
+
 func (e *Ecosystem) ID() string { return "npm" }
 
 func (e *Ecosystem) Capabilities() ecosystem.Caps {
 	// npm has no global lock and no conflict resolution; it operates on the
-	// global scope of a Node prefix only.
-	return ecosystem.Caps{GlobalScope: true}
+	// global scope of a Node prefix and on project directories.
+	return ecosystem.Caps{GlobalScope: true, ProjectScope: true}
 }
 
 func (e *Ecosystem) Discover(ctx context.Context) ([]ecosystem.Environment, error) {
+	if e.projectRoot != "" {
+		// The project's single destination is its own module directory.
+		return []ecosystem.Environment{{
+			ID:   filepath.Join(e.projectRoot, "node_modules"),
+			Kind: projectEnvKind,
+			Meta: ecosystem.Meta{ecosystem.MetaSource: "project"},
+		}}, nil
+	}
 	infos, err := prefix.Detect(ctx, prefix.Config{})
 	if err != nil {
 		return nil, err
@@ -70,7 +99,19 @@ func (e *Ecosystem) Discover(ctx context.Context) ([]ecosystem.Environment, erro
 }
 
 func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment) ([]ecosystem.Package, error) {
-	parsed, err := npmcmd.LSGlobal(ctx, env.ID)
+	var (
+		parsed map[string]npmcmd.ParsedPkg
+		err    error
+	)
+	if e.projectRoot != "" {
+		prefixID, perr := prefix.Active(ctx)
+		if perr != nil {
+			return nil, fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, perr)
+		}
+		parsed, err = npmcmd.LSProject(ctx, prefixID, e.projectRoot)
+	} else {
+		parsed, err = npmcmd.LSGlobal(ctx, env.ID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +123,8 @@ func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment
 }
 
 // registry resolves (and caches) the environment's configured registry URL.
+// Project environments resolve it with npm rooted in the project, so a
+// project .npmrc takes effect.
 func (e *Ecosystem) registry(ctx context.Context, envID string) (string, error) {
 	e.mu.Lock()
 	if url, ok := e.regCache[envID]; ok {
@@ -89,7 +132,19 @@ func (e *Ecosystem) registry(ctx context.Context, envID string) (string, error) 
 		return url, nil
 	}
 	e.mu.Unlock()
-	url, err := npmcmd.GetRegistry(ctx, envID)
+	var (
+		url string
+		err error
+	)
+	if e.projectRoot != "" {
+		prefixID, perr := prefix.Active(ctx)
+		if perr != nil {
+			return "", ecosystem.ErrNoRegistry
+		}
+		url, err = npmcmd.GetRegistryIn(ctx, prefixID, e.projectRoot)
+	} else {
+		url, err = npmcmd.GetRegistry(ctx, envID)
+	}
 	if err != nil {
 		return "", ecosystem.ErrNoRegistry
 	}
@@ -134,7 +189,15 @@ func (e *Ecosystem) UnpackedSize(ctx context.Context, env ecosystem.Environment,
 
 func (e *Ecosystem) Doc(ctx context.Context, env ecosystem.Environment, name string, installed bool) (*ecosystem.Doc, bool, error) {
 	if installed {
-		doc, err := npmcmd.LocalDoc(env.ID, name)
+		var (
+			doc *registry.Doc
+			err error
+		)
+		if e.projectRoot != "" {
+			doc, err = npmcmd.LocalDocAt(env.ID, name)
+		} else {
+			doc, err = npmcmd.LocalDoc(env.ID, name)
+		}
 		if err != nil {
 			return nil, false, err
 		}
@@ -152,17 +215,26 @@ func (e *Ecosystem) Doc(ctx context.Context, env ecosystem.Environment, name str
 }
 
 func (e *Ecosystem) Readme(env ecosystem.Environment, name string) (string, bool) {
+	if e.projectRoot != "" {
+		return npmcmd.ReadmeAt(env.ID, name)
+	}
 	return npmcmd.Readme(env.ID, name)
 }
 
-// Writable reports whether the prefix is writable. Missing directories are
-// allowed — npm creates them on first install; an existing directory that
+// Writable reports whether the destination is writable. Missing directories
+// are allowed — npm creates them on first install; an existing directory that
 // the current user cannot write to is not.
 func (e *Ecosystem) Writable(env ecosystem.Environment) bool {
-	for _, d := range []string{
-		filepath.Join(env.ID, "lib", "node_modules"),
-		filepath.Join(env.ID, "bin"),
-	} {
+	var dirs []string
+	if e.projectRoot != "" {
+		dirs = []string{e.projectRoot, env.ID}
+	} else {
+		dirs = []string{
+			filepath.Join(env.ID, "lib", "node_modules"),
+			filepath.Join(env.ID, "bin"),
+		}
+	}
+	for _, d := range dirs {
 		fi, err := os.Stat(d)
 		if err != nil || !fi.IsDir() {
 			continue
@@ -195,19 +267,23 @@ func (e *Ecosystem) Resolve(intent ecosystem.Intent) (ecosystem.Plan, []ecosyste
 	}
 	var batches []ecosystem.Batch
 	if len(installs) > 0 {
-		batches = append(batches, newBatch(ecosystem.OpInstall, installs))
+		batches = append(batches, e.newBatch(ecosystem.OpInstall, installs))
 	}
 	if len(upgrades) > 0 {
-		batches = append(batches, newBatch(ecosystem.OpUpgrade, upgrades))
+		batches = append(batches, e.newBatch(ecosystem.OpUpgrade, upgrades))
 	}
 	if len(removals) > 0 {
-		batches = append(batches, newBatch(ecosystem.OpRemove, removals))
+		batches = append(batches, e.newBatch(ecosystem.OpRemove, removals))
 	}
 	return ecosystem.Plan{Env: intent.Env, Batches: batches}, nil, nil
 }
 
-func newBatch(op ecosystem.OpKind, items []ecosystem.Item) ecosystem.Batch {
-	args := append([]string{}, opVerbs[op]...)
+func (e *Ecosystem) newBatch(op ecosystem.OpKind, items []ecosystem.Item) ecosystem.Batch {
+	verbs := opVerbs[op]
+	if e.projectRoot != "" {
+		verbs = projectOpVerbs[op]
+	}
+	args := append([]string{}, verbs...)
 	for _, it := range items {
 		if it.Version != "" {
 			args = append(args, it.Name+"@"+it.Version)
@@ -220,10 +296,23 @@ func newBatch(op ecosystem.OpKind, items []ecosystem.Item) ecosystem.Batch {
 
 // Execute runs one plan batch with the environment's own node + npm and
 // returns its combined raw output. The output is not interpreted; truth
-// comes from a post-run ListInstalled.
+// comes from a post-run ListInstalled. Project batches run without -g, rooted
+// in the project directory, with the active prefix's toolchain.
 func (e *Ecosystem) Execute(ctx context.Context, env ecosystem.Environment, batch ecosystem.Batch) (string, error) {
-	node, npmCLI := npmcmd.NodeAndNPM(env.ID)
+	var node, npmCLI string
+	if e.projectRoot != "" {
+		prefixID, err := prefix.Active(ctx)
+		if err != nil {
+			return "", fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, err)
+		}
+		node, npmCLI = npmcmd.NodeAndNPM(prefixID)
+	} else {
+		node, npmCLI = npmcmd.NodeAndNPM(env.ID)
+	}
 	args := append([]string{npmCLI}, opVerbs[batch.Op]...)
+	if e.projectRoot != "" {
+		args = append([]string{npmCLI}, projectOpVerbs[batch.Op]...)
+	}
 	for _, it := range batch.Items {
 		if it.Version != "" {
 			args = append(args, it.Name+"@"+it.Version)
@@ -231,7 +320,11 @@ func (e *Ecosystem) Execute(ctx context.Context, env ecosystem.Environment, batc
 		}
 		args = append(args, it.Name)
 	}
-	out, err := exec.CommandContext(ctx, node, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, node, args...)
+	if e.projectRoot != "" {
+		cmd.Dir = e.projectRoot
+	}
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
@@ -251,10 +344,28 @@ func (e *Ecosystem) Lock(env ecosystem.Environment) (ecosystem.LockHandle, error
 	return &lockHandle{mgr: e.locks, envID: env.ID}, nil
 }
 
-// DetectProject reports project applicability. The npm adapter is global-
-// scope only in this change; project mode arrives with a later change.
+// DetectProject reports whether root is a Node project (a package.json file
+// present) and which tool variant it uses, read from the lockfile:
+// pnpm-lock.yaml → pnpm, yarn.lock → yarn, anything else (including a bare
+// package.json) → npm. It is a pure filesystem read; no manager binary runs.
 func (e *Ecosystem) DetectProject(root string) (bool, ecosystem.Meta) {
-	return false, nil
+	fi, err := os.Stat(filepath.Join(root, "package.json"))
+	if err != nil || !fi.Mode().IsRegular() {
+		return false, nil
+	}
+	variant := "npm"
+	switch {
+	case fileExists(filepath.Join(root, "pnpm-lock.yaml")):
+		variant = "pnpm"
+	case fileExists(filepath.Join(root, "yarn.lock")):
+		variant = "yarn"
+	}
+	return true, ecosystem.Meta{ecosystem.MetaVariant: variant}
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 func toEcoDoc(d *registry.Doc) *ecosystem.Doc {
