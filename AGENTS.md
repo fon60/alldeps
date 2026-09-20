@@ -50,6 +50,7 @@ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' ./tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 - Target terminal size is **80x24** — all layouts must fit it (status line format: `%d/%d packages, %d pending  sort:%s  f:%s  <tilde-path>`).
 - bubbletea diff-renders frames, so pty captures are fragmentary; prefer deterministic Go unit tests for logic, use pty runs only for visual/flow checks.
 - Simulate offline: `env npm_config_registry=http://127.0.0.1:9/ ./npmitude`.
+- PHP-version-dependent tests (composer platform conflicts) run in docker against a pinned image, not the host PHP — see `test/e2e-composer-docker.sh` (`php:8.1-cli`); the solver's platform verdict must be reproducible from the image tag.
 - Test fixtures for npm JSON live in `internal/npmcmd/*_test.go`; registry behavior is tested against local `httptest` stubs (no real network in unit tests).
 
 ## Code Style
