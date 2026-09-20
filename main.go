@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -21,7 +23,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "npmitude:", err)
 		os.Exit(1)
 	}
-	p := tea.NewProgram(buildModel(mode, root))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p := tea.NewProgram(buildModel(ctx, mode, root))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -31,7 +35,7 @@ func main() {
 // buildModel wires the launch: global mode around the npm adapter, project
 // mode around the adapters detected as applicable to root (each bound to its
 // own project instance).
-func buildModel(mode app.Mode, root string) app.Model {
+func buildModel(ctx context.Context, mode app.Mode, root string) app.Model {
 	if mode == app.ModeGlobal {
 		return app.New(npm.New())
 	}
@@ -43,7 +47,7 @@ func buildModel(mode app.Mode, root string) app.Model {
 		// Node-family variants are all served by the npm adapter bound to the
 		// project; other adapters (when they exist) serve themselves.
 		if _, ok := a.Adapter.(*npm.Ecosystem); ok {
-			managers[a.ID] = npm.NewProject(root)
+			managers[a.ID] = npm.NewProject(ctx, root)
 		} else {
 			managers[a.ID] = a.Adapter
 		}

@@ -44,10 +44,12 @@ var projectOpVerbs = map[ecosystem.OpKind][]string{
 // are resolved once per environment and cached. A non-empty projectRoot binds
 // the instance to one project directory (project scope).
 type Ecosystem struct {
-	mu          sync.Mutex
-	regCache    map[string]string // envID -> configured registry URL
-	locks       *lock.Manager
-	projectRoot string
+	mu            sync.Mutex
+	regCache      map[string]string // envID -> configured registry URL
+	locks         *lock.Manager
+	projectRoot   string
+	projectPrefix string // bound toolchain prefix for project ops ("" = resolve active per op)
+	pinNotice     string // one-shot startup notice when a parseable .nvmrc pin matched nothing
 }
 
 // New returns the npm adapter using the default session lock directory.
@@ -55,12 +57,62 @@ func New() *Ecosystem {
 	return &Ecosystem{regCache: map[string]string{}, locks: lock.NewDefault()}
 }
 
-// NewProject returns an npm adapter bound to one project directory. Its
-// commands run in that directory with the active npm prefix's node + npm.
-func NewProject(root string) *Ecosystem {
+// NewProject returns an npm adapter bound to one project directory. At
+// construction it resolves the project's .nvmrc pin against all installed
+// Node prefixes and binds the matching prefix as the project toolchain; an
+// absent, unparseable, or unmatched pin falls back to the active prefix (a
+// parseable pin that matches nothing also records a startup notice).
+func NewProject(ctx context.Context, root string) *Ecosystem {
 	e := New()
 	e.projectRoot = root
+	if pin, ok := prefix.ParsePin(readPinFile(root)); ok {
+		if infos, err := prefix.Detect(ctx, prefix.Config{}); err == nil {
+			var versions []string
+			for _, info := range infos {
+				versions = append(versions, info.NodeVersion)
+			}
+			if v := prefix.MatchPin(pin, versions); v != "" {
+				for _, info := range infos {
+					if info.NodeVersion == v {
+						e.projectPrefix = info.ID
+						break
+					}
+				}
+			} else {
+				e.pinNotice = fmt.Sprintf("Node %s pinned in .nvmrc not installed; using active toolchain", pin)
+			}
+		}
+	}
+	if e.projectPrefix == "" {
+		if active, err := prefix.Active(ctx); err == nil {
+			e.projectPrefix = active
+		}
+	}
 	return e
+}
+
+// PinNotice returns the one-shot startup notice recorded when a parseable
+// .nvmrc pin matched no installed prefix ("" otherwise).
+func (e *Ecosystem) PinNotice() string { return e.pinNotice }
+
+// readPinFile returns the first line of <root>/.nvmrc, trimmed ("" when the
+// file is absent or empty).
+func readPinFile(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, ".nvmrc"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
+}
+
+// projectToolchain returns the prefix whose node + npm run project-scoped
+// operations: the prefix bound at construction, or the active prefix when
+// nothing was bound (the active lookup failed at startup).
+func (e *Ecosystem) projectToolchain(ctx context.Context) (string, error) {
+	if e.projectPrefix != "" {
+		return e.projectPrefix, nil
+	}
+	return prefix.Active(ctx)
 }
 
 func (e *Ecosystem) ID() string { return "npm" }
@@ -106,7 +158,7 @@ func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment
 		err    error
 	)
 	if e.projectRoot != "" {
-		prefixID, perr := prefix.Active(ctx)
+		prefixID, perr := e.projectToolchain(ctx)
 		if perr != nil {
 			return nil, fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, perr)
 		}
@@ -139,7 +191,7 @@ func (e *Ecosystem) registry(ctx context.Context, envID string) (string, error) 
 		err error
 	)
 	if e.projectRoot != "" {
-		prefixID, perr := prefix.Active(ctx)
+		prefixID, perr := e.projectToolchain(ctx)
 		if perr != nil {
 			return "", ecosystem.ErrNoRegistry
 		}
@@ -299,14 +351,15 @@ func (e *Ecosystem) newBatch(op ecosystem.OpKind, items []ecosystem.Item) ecosys
 // Execute runs one plan batch with the environment's own node + npm and
 // returns its combined raw output. The output is not interpreted; truth
 // comes from a post-run ListInstalled. Project batches run without -g, rooted
-// in the project directory, with the active prefix's toolchain.
+// in the project directory, with the project's bound toolchain (the pinned
+// prefix when a .nvmrc pin matched, else the active one).
 func (e *Ecosystem) Execute(ctx context.Context, env ecosystem.Environment, batch ecosystem.Batch) (string, error) {
 	var (
 		argv []string
 		err  error
 	)
 	if e.projectRoot != "" {
-		prefixID, perr := prefix.Active(ctx)
+		prefixID, perr := e.projectToolchain(ctx)
 		if perr != nil {
 			return "", fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, perr)
 		}

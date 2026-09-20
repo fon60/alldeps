@@ -155,10 +155,19 @@ func New(eco ecosystem.Ecosystem) Model {
 	}
 }
 
+// pinNoticeProvider is optionally implemented by managers bound to a project
+// to surface a one-shot toolchain notice at startup (e.g. an uninstalled
+// .nvmrc pin); the app only displays it, never acts on it.
+type pinNoticeProvider interface {
+	PinNotice() string
+}
+
 // NewProject builds a project-mode model (design D5): one entry per
 // applicable manager, each bound to its own adapter instance; exactly the
 // first applicable manager starts active. A project with no recognized
-// markers still launches, showing a notice instead of guessing.
+// markers still launches, showing a notice instead of guessing. A manager's
+// startup notice (e.g. a pin fallback) is surfaced non-blocking on first
+// paint.
 func NewProject(root string, managers map[string]ecosystem.Ecosystem, applicable []string) Model {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -176,6 +185,14 @@ func NewProject(root string, managers map[string]ecosystem.Ecosystem, applicable
 	}
 	if len(applicable) > 0 {
 		m.activeManagerID = applicable[0]
+		for _, id := range applicable {
+			if pn, ok := managers[id].(pinNoticeProvider); ok {
+				if n := pn.PinNotice(); n != "" {
+					m.notice = n
+					break
+				}
+			}
+		}
 	} else {
 		m.notice = "no recognized package manager for project " + displayPath(root) + " — nothing to manage here"
 	}
