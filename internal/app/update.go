@@ -143,6 +143,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && m.planSizes != nil {
 			m.planSizes[msg.name] = msg.bytes
 		}
+	case resolveMsg:
+		// A resolver failure is non-fatal: the previous conflict state stands.
+		if msg.err != nil {
+			return m, nil
+		}
+		ps := m.state.Prefixes[msg.dest]
+		if ps == nil {
+			return m, nil
+		}
+		fresh := make(map[string][]ecosystem.Conflict, len(msg.conflicts))
+		for _, c := range msg.conflicts {
+			fresh[c.Package] = append(fresh[c.Package], c)
+			ps.ForgetResolution(c.Package) // the resolver still reports it: the pick did not settle it
+		}
+		ps.Conflicts = fresh
 	case infoDataMsg:
 		if msg.name != m.infoName || m.screen != ScreenInfo && m.screen != ScreenVersions {
 			return m, nil // stale: the user moved on
@@ -262,6 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLocks = nil
 		m.applyDone = true
 		m.clampCursor()
+		return m.withConflictRefresh()
 	case tea.KeyMsg:
 		if m.state.Applying || m.applyDone {
 			// The apply screen is up: while the run is in progress only ctrl+c
@@ -296,9 +312,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 			}
-			return m, tea.Batch(cmds...)
+			return m.withConflictRefresh(cmds...)
 		}
-		return m.updateKey(msg)
+		next, cmd := m.updateKey(msg)
+		return next.(Model).withConflictRefresh(cmd)
 	}
 	return m, nil
 }
@@ -344,6 +361,9 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.screen == ScreenReadme {
 		return m.updateReadme(msg)
+	}
+	if m.screen == ScreenResolver {
+		return m.updateResolver(msg)
 	}
 	if m.screen == ScreenHelp {
 		return m.updateHelp(msg)
@@ -415,6 +435,21 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.markHold()
 	case ":":
 		m.markRevert()
+	case "r":
+		if m.searchActive {
+			m.notice = "clear the search first (esc), then resolve conflicts"
+			return m, nil
+		}
+		u := m.selectedUnified()
+		if u == nil {
+			return m, nil
+		}
+		dest := m.conflictDestFor(u.Name)
+		if dest == "" {
+			m.notice = u.Name + " has no unresolved conflict"
+			return m, nil
+		}
+		return m.openResolver(dest, u.Name, ScreenList)
 	case "U":
 		n := 0
 		for _, e := range m.envs() {
@@ -578,16 +613,64 @@ func (m Model) updateTargets(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updatePlan handles keys while the plan preview is open. Cancelling leaves
-// all marks pending and executes nothing. Confirming with g makes "g,g" a
-// quick shortcut: open the plan, apply it.
+// updatePlan handles keys while the plan preview is open. While the conflict
+// gate popup is up it offers exactly two choices: [Yes] opens the resolver
+// for the first affected package, [No] shows the marked plan. Cancelling the
+// plan leaves all marks pending and executes nothing; confirming with g makes
+// "g,g" a quick shortcut: open the plan, apply it.
 func (m Model) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.planGate {
+		switch msg.String() {
+		case "y", "Y", "enter":
+			dest, name := m.nextConflictCell()
+			if dest == "" {
+				m.planGate = false
+				return m, nil
+			}
+			return m.openResolver(dest, name, ScreenPlan)
+		case "n", "N", "esc", "q":
+			m.planGate = false
+			return m, nil
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "g", "G", "enter":
 		return m.startApply()
 	case "n", "esc", "q":
 		m.screen = ScreenList
 		return m, nil
+	}
+	return m, nil
+}
+
+// updateResolver handles keys on the per-package resolution screen: j/k move
+// over the flat option list of all conflicts of the cell, enter applies the
+// option under the cursor (updating marks and re-resolving in the background),
+// esc/q returns to the opening screen.
+func (m Model) updateResolver(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.resolverOptionRows())
+	switch msg.String() {
+	case "esc", "q":
+		m.screen = m.resolverFrom
+		if m.screen == ScreenPlan {
+			m.planGate = m.planHasConflicts()
+		}
+		return m, nil
+	case "up", "k":
+		if m.resolverCursor > 0 {
+			m.resolverCursor--
+		}
+	case "down", "j":
+		if m.resolverCursor < n-1 {
+			m.resolverCursor++
+		}
+	case "enter", " ":
+		rows := m.resolverOptionRows()
+		if m.resolverCursor >= len(rows) {
+			return m, nil
+		}
+		m.applyResolutionOption(rows[m.resolverCursor])
 	}
 	return m, nil
 }

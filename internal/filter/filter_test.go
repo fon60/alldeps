@@ -3,13 +3,14 @@ package filter
 import "testing"
 
 var (
-	installedCurrent = View("alpha", true, false, false)
-	installedUpgrad  = View("beta", true, true, false)
-	notInstalled     = View("gamma", false, false, false)
-	brokenInstalled  = View("delta", true, false, true)
-	namePrettier     = View("prettier", true, false, false)
-	namePrettierPlug = View("prettier-plugin-x", true, false, false)
-	nameXprettier    = View("xprettier", true, false, false)
+	installedCurrent = View("alpha", true, false, false, false)
+	installedUpgrad  = View("beta", true, true, false, false)
+	notInstalled     = View("gamma", false, false, false, false)
+	brokenInstalled  = View("delta", true, false, true, false)
+	conflictedRow    = View("epsilon", true, false, false, true)
+	namePrettier     = View("prettier", true, false, false, false)
+	namePrettierPlug = View("prettier-plugin-x", true, false, false, false)
+	nameXprettier    = View("xprettier", true, false, false, false)
 )
 
 func eval(t *testing.T, expr string, views ...PkgView) []bool {
@@ -34,6 +35,9 @@ func TestSimpleTests(t *testing.T) {
 	}
 	if got := eval(t, "~b", installedCurrent, brokenInstalled); got[0] != false || got[1] != true {
 		t.Fatalf("~b = %v", got)
+	}
+	if got := eval(t, "~c", installedCurrent, conflictedRow); got[0] != false || got[1] != true {
+		t.Fatalf("~c = %v", got)
 	}
 }
 

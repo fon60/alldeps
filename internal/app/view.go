@@ -42,6 +42,8 @@ func (m Model) View() string {
 		body = m.versionsBody()
 	case ScreenReadme:
 		body = m.readmeBody()
+	case ScreenResolver:
+		body = m.resolverBody()
 	case ScreenHelp:
 		body = m.helpBody()
 	default:
@@ -87,7 +89,12 @@ func (m Model) screenHints() string {
 	case ScreenTargets:
 		return "space: toggle   enter: confirm   esc/q: cancel"
 	case ScreenPlan:
+		if m.planGate {
+			return "[y] resolve conflicts   [n] show the marked plan"
+		}
 		return "[g] apply   [n/esc] cancel"
+	case ScreenResolver:
+		return "[j/k] choose option   [enter] apply it   [esc/q] back"
 	case ScreenInfo:
 		return "[esc] back   [v] versions   [C] readme"
 	case ScreenVersions:
@@ -198,16 +205,27 @@ func pickerRow(cursor bool, marker, source, version string, count int, path stri
 // planBody renders the plan preview: one section per (destination, manager)
 // group, each listing its installs (name, target version, approximate
 // download size), removals (freed space) and upgrades (from→to). Groups whose
-// destination is marked under two managers are flagged invalid.
+// destination is marked under two managers are flagged invalid; operations
+// involved in an unresolved conflict carry the same "!" indicator as the list.
+// While the conflict gate popup is up it replaces the whole body.
 func (m Model) planBody() string {
 	bodyH := m.height - 2
 	if bodyH < 1 {
 		bodyH = 1
 	}
+	if m.planGate {
+		return m.planGateBody(bodyH)
+	}
 	lines := []string{titleStyle.Render("Plan"), ""}
 	groups := m.planGroups()
 	if len(groups) == 0 {
 		lines = append(lines, "nothing to do")
+	}
+	mark := func(base string, dest string, p *domain.PkgState) string {
+		if m.cellConflicted(dest, p.Name) {
+			return lipgloss.JoinHorizontal(lipgloss.Left, base, noticeStyle.Render("  ! conflict"))
+		}
+		return base
 	}
 	for _, g := range groups {
 		header := fmt.Sprintf("%s @ %s", g.manager, displayPath(g.dest))
@@ -224,23 +242,110 @@ func (m Model) planBody() string {
 			if b, ok := m.planSizes[p.Name]; ok {
 				sz = humanSize(b)
 			}
-			lines = append(lines, fmt.Sprintf("  install %-28s %s", padRight(p.Name+"@"+v, 28), sz))
+			lines = append(lines, mark(fmt.Sprintf("  install %-28s %s", padRight(p.Name+"@"+v, 28), sz), g.dest, p))
 		}
 		for _, p := range g.removals {
 			sz := "…"
 			if p.SizeBytes != nil {
 				sz = humanSize(*p.SizeBytes)
 			}
-			lines = append(lines, fmt.Sprintf("  remove  %-28s frees %s", padRight(p.Name, 28), sz))
+			lines = append(lines, mark(fmt.Sprintf("  remove  %-28s frees %s", padRight(p.Name, 28), sz), g.dest, p))
 		}
 		for _, p := range g.upgrades {
 			to := targetVersionFor(p, g.manager)
 			if to == "" {
 				to = "latest"
 			}
-			lines = append(lines, fmt.Sprintf("  upgrade %-16s %s → %s", padRight(p.Name, 16), p.InstalledVersion, to))
+			lines = append(lines, mark(fmt.Sprintf("  upgrade %-16s %s → %s", padRight(p.Name, 16), p.InstalledVersion, to), g.dest, p))
 		}
 		lines = append(lines, "")
+	}
+	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// resolverBody renders the per-package resolution screen: each conflict of
+// the cell with its options (label, stated consequence, size delta where
+// known), and — for redundancy conflicts — the per-destination table of
+// copies with versions and sizes (spec: Node dedupe flavor reuses the
+// per-destination detail view).
+func (m Model) resolverBody() string {
+	bodyH := m.height - 2
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	lines := []string{titleStyle.Render("Resolve — " + m.resolverName), ""}
+
+	mgr := m.managerForDest(m.resolverDest)
+	copies := m.dedupeCopies(mgr, m.resolverName)
+	if len(copies) >= 2 {
+		lines = append(lines, sectionStyle.Render("Copies by destination"))
+		for _, c := range copies {
+			sz := "…"
+			if c.size != nil {
+				sz = humanSize(*c.size)
+			}
+			line := fmt.Sprintf("  %-40s %-12s %s", truncate(displayPath(c.dest), 40), padRight(c.version, 12), sz)
+			lines = append(lines, line)
+		}
+		lines = append(lines, "")
+	}
+
+	conflicts := m.conflictsForCell(m.resolverDest, m.resolverName)
+	if len(conflicts) == 0 {
+		lines = append(lines, "no unresolved conflicts for this package")
+	}
+	flatIdx := 0
+	for _, cf := range conflicts {
+		lines = append(lines, sectionStyle.Render(fitText(cf.Message, m.width)))
+		for _, o := range cf.Options {
+			delta := ""
+			if o.SizeDelta != nil {
+				switch d := *o.SizeDelta; {
+				case d < 0:
+					delta = fmt.Sprintf(" (frees %s)", humanSize(-d))
+				case d > 0:
+					delta = fmt.Sprintf(" (+%s)", humanSize(d))
+				default:
+					delta = " (no size change)"
+				}
+			}
+			label := fmt.Sprintf("  %2d. %-40s%s", flatIdx+1, truncate(o.Label, 40), delta)
+			if flatIdx == m.resolverCursor {
+				label = cursorStyle.Render(label)
+			}
+			lines = append(lines, label)
+			lines = append(lines, "    "+fitText(o.Description, m.width-4))
+			flatIdx++
+		}
+	}
+	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// planGateBody is the Yes/No popup raised when a plan contains unresolved
+// conflicts (spec: plan gate on unresolved conflicts).
+func (m Model) planGateBody(bodyH int) string {
+	n := 0
+	for _, g := range m.planGroups() {
+		if g.invalid {
+			continue
+		}
+		for _, list := range [][]*domain.PkgState{g.installs, g.upgrades, g.removals} {
+			for _, p := range list {
+				if m.cellConflicted(g.dest, p.Name) {
+					n++
+				}
+			}
+		}
+	}
+	lines := []string{
+		titleStyle.Render("Plan — conflicts"),
+		"",
+		fmt.Sprintf("%d operation(s) in this plan are involved in unresolved conflict(s).", n),
+		"",
+		"There are conflicts in the plan; would you like to resolve them?",
+		"",
+		"  [y] open the resolver for the affected packages",
+		"  [n] show the plan with the conflicting rows marked",
 	}
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
@@ -462,6 +567,7 @@ var helpSections = []helpSection{
 		{"-", "remove from the headline destination"},
 		{"=", "hold (excluded from bulk upgrades)"},
 		{":", "revert mark on the selected row"},
+		{"r", "open the resolver for a conflicted package (! marker)"},
 		{"U", "mark all upgradable packages"},
 		{"x", "clear all marks"},
 	}},
@@ -476,8 +582,14 @@ var helpSections = []helpSection{
 	}},
 	{title: "Search & filter", rows: [][2]string{
 		{"/", "search the registry (esc clears; j loads more at the end)"},
-		{"f", "filter expression: ~i ~u ~b ~n <regex>, ! & |, parens"},
+		{"f", "filter expression: ~i ~u ~b ~c ~n <regex>, ! & |, parens"},
 		{"l", "match installed package names"},
+	}},
+	{title: "Conflict resolution", rows: [][2]string{
+		{"!", "row/plan op involved in an unresolved conflict (~c filters them)"},
+		{"r", "resolver screen for the selected conflicted package"},
+		{"j/k + enter", "choose an option (label, consequence, size delta)"},
+		{"g (plan)", "gate popup when the plan has conflicts: [y] resolve / [n] marked plan"},
 	}},
 	{title: "Info screen", rows: [][2]string{
 		{"j/k", "move the per-destination table cursor"},
@@ -603,8 +715,17 @@ func (m Model) listRegion(h int) string {
 		r := u.Row
 		// Each cell is rendered as a self-contained styled segment: nesting a
 		// pre-styled string inside the cursor style would let its trailing
-		// reset end the reverse video after the first column.
+		// reset end the reverse video after the first column. A conflicted row
+		// gets the distinct "!" appended to its flag (non-intrusive: no other
+		// cell changes).
 		flagCell := padRight(u.Flag(m.activeManagerID), colFlag)
+		flagStyleCell := flagStyle
+		cursorFlagStyleCell := cursorFlagStyle
+		if m.rowConflicted(u) {
+			flagCell = padRight(u.Flag(m.activeManagerID)+"!", colFlag)
+			flagStyleCell = conflictStyle
+			cursorFlagStyleCell = conflictCursorStyle
+		}
 		nameCell := truncate(u.Name, nameW)
 		sizeCellS := padRight(sizeCell(u.SizeBytes()), colSize)
 		verCell := padRight(r.InstalledVersion, colVer)
@@ -617,7 +738,7 @@ func (m Model) listRegion(h int) string {
 		var row string
 		if i == m.cursor {
 			row = lipgloss.JoinHorizontal(lipgloss.Left,
-				cursorFlagStyle.Render(flagCell),
+				cursorFlagStyleCell.Render(flagCell),
 				cursorStyle.Render(nameCell),
 				cursorStyle.Render(sizeCellS),
 				cursorStyle.Render(verCell),
@@ -626,7 +747,7 @@ func (m Model) listRegion(h int) string {
 			)
 		} else {
 			row = lipgloss.JoinHorizontal(lipgloss.Left,
-				flagStyle.Render(flagCell),
+				flagStyleCell.Render(flagCell),
 				nameCell,
 				sizeCellS,
 				verCell,
@@ -785,7 +906,7 @@ func (m Model) promptLine() string {
 
 // keyHints is the list-screen action line under the title (design D8 keymap),
 // truncated to fit; the full reference lives on the ? help screen.
-const keyHints = "+ - = : marks  U upgradable  x clear  enter info  / search  f filter  l match  S sort  u refresh  e/E envs  g apply  ? help  q quit"
+const keyHints = "+ - = : marks  r resolve  U upgradable  x clear  enter info  / search  f filter  l match  S sort  u refresh  e/E envs  g apply  ? help  q quit"
 
 func (m Model) statusLine() string {
 	prefixID := m.state.ActivePrefixID
@@ -907,6 +1028,8 @@ var (
 	headerStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
 	flagStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	cursorFlagStyle   = flagStyle.Reverse(true)
+	conflictStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
+	conflictCursorStyle = conflictStyle.Reverse(true)
 	nameStyle         = lipgloss.NewStyle().Bold(true)
 	cursorStyle       = lipgloss.NewStyle().Reverse(true)
 	cursorSourceStyle = sourceStyle.Reverse(true)

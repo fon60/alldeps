@@ -66,9 +66,11 @@ func NewProject(root string) *Ecosystem {
 func (e *Ecosystem) ID() string { return "npm" }
 
 func (e *Ecosystem) Capabilities() ecosystem.Caps {
-	// npm has no global lock and no conflict resolution; it operates on the
-	// global scope of a Node prefix and on project directories.
-	return ecosystem.Caps{GlobalScope: true, ProjectScope: true}
+	// npm has no global lock and its resolver reports no conflicts; it
+	// operates on the global scope of a Node prefix and on project
+	// directories. The Node family does carry redundant cross-destination
+	// copies, so dedupe is advertised (the app derives those conflicts).
+	return ecosystem.Caps{GlobalScope: true, ProjectScope: true, HasDedupe: true}
 }
 
 func (e *Ecosystem) Discover(ctx context.Context) ([]ecosystem.Environment, error) {

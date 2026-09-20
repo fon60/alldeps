@@ -2,7 +2,13 @@
 // everything keyed by environment (prefix path), with pure transition helpers.
 package domain
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"npmitude/internal/ecosystem"
+)
 
 type Origin int
 
@@ -157,14 +163,92 @@ func (p *PkgState) FlagFor(manager string) string {
 	return string(p.StateChar()) + string(p.ActionCharFor(manager))
 }
 
+// chosenResolution records a resolution option the user picked for a
+// package's conflict. It stays valid only while the cell's pending marks are
+// unchanged (sig), so any later edit to that cell re-opens the conflict.
+type chosenResolution struct {
+	Label string
+	Sig   string
+}
+
 // PrefixState is all list state for one environment (one destination). The
 // ID is adapter-defined; manager-specific facts about the environment live in
-// the adapter, not here.
+// the adapter, not here. Conflicts holds unresolved conflicts reported by a
+// resolver for this destination, keyed by package name; Chosen records the
+// user's pick per package until the cell's marks or the disk change.
 type PrefixState struct {
 	ID         string // environment id, adapter-defined
 	Packages   map[string]*PkgState
 	Loaded     bool
 	SizesKnown bool
+
+	Conflicts map[string][]ecosystem.Conflict
+	Chosen    map[string]chosenResolution
+}
+
+// CellMarkSig is a stable signature of every pending mark on one package of
+// this destination (empty when the cell has no marks).
+func (ps *PrefixState) CellMarkSig(name string) string {
+	if ps == nil {
+		return ""
+	}
+	p := ps.Packages[name]
+	if p == nil || len(p.Marks) == 0 {
+		return ""
+	}
+	mgrs := make([]string, 0, len(p.Marks))
+	for mgr := range p.Marks {
+		mgrs = append(mgrs, mgr)
+	}
+	sort.Strings(mgrs)
+	var b strings.Builder
+	for _, mgr := range mgrs {
+		e := p.Marks[mgr]
+		fmt.Fprintf(&b, "%s:%d:%s;", mgr, int(e.Mark), e.TargetVersion)
+	}
+	return b.String()
+}
+
+// ResolutionChosen reports whether a valid (still matching the cell's marks)
+// resolution pick is recorded for name on this destination.
+func (ps *PrefixState) ResolutionChosen(name string) bool {
+	if ps == nil {
+		return false
+	}
+	c, ok := ps.Chosen[name]
+	return ok && c.Sig == ps.CellMarkSig(name)
+}
+
+// UnresolvedConflicts returns the resolver-reported conflicts of one package
+// that are not covered by a valid resolution pick.
+func (ps *PrefixState) UnresolvedConflicts(name string) []ecosystem.Conflict {
+	if ps == nil || len(ps.Conflicts[name]) == 0 {
+		return nil
+	}
+	if ps.ResolutionChosen(name) {
+		return nil
+	}
+	return ps.Conflicts[name]
+}
+
+// RecordResolution stores the user's pick for name, bound to the cell's mark
+// signature at that moment.
+func (ps *PrefixState) RecordResolution(name, label string) {
+	if ps == nil {
+		return
+	}
+	if ps.Chosen == nil {
+		ps.Chosen = map[string]chosenResolution{}
+	}
+	ps.Chosen[name] = chosenResolution{Label: label, Sig: ps.CellMarkSig(name)}
+}
+
+// ForgetResolution drops any recorded pick for name.
+func (ps *PrefixState) ForgetResolution(name string) {
+	if ps == nil || ps.Chosen == nil {
+		return
+	}
+	delete(ps.Chosen, name)
 }
 
 // Pkg returns the package row for name, or nil.

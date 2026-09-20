@@ -1,7 +1,7 @@
 // Package filter implements the aptitude-subset filter language (design D5):
-// ~i, ~u, ~b, ~n <pattern>, !, &, | with a small recursive-descent parser.
-// Invalid expressions are rejected at parse time so the caller can retain the
-// previously active filter.
+// ~i, ~u, ~b, ~c, ~n <pattern>, !, &, | with a small recursive-descent
+// parser. Invalid expressions are rejected at parse time so the caller can
+// retain the previously active filter.
 package filter
 
 import (
@@ -16,6 +16,7 @@ type PkgView struct {
 	Installed  bool
 	Upgradable bool
 	Broken     bool
+	Conflicted bool // involved in an unresolved conflict
 }
 
 // Predicate evaluates one package row.
@@ -131,7 +132,7 @@ func (p *parser) parseFactor() (*node, error) {
 	return p.parsePrimary()
 }
 
-// parsePrimary: '~i' | '~u' | '~b' | '~n' pattern | '(' expr ')'
+// parsePrimary: '~i' | '~u' | '~b' | '~c' | '~n' pattern | '(' expr ')'
 func (p *parser) parsePrimary() (*node, error) {
 	p.skipWS()
 	if p.at('(') {
@@ -162,6 +163,9 @@ func (p *parser) parsePrimary() (*node, error) {
 		case "~b":
 			p.pos += 2
 			return &node{eval: func(v PkgView) bool { return v.Broken }}, nil
+		case "~c":
+			p.pos += 2
+			return &node{eval: func(v PkgView) bool { return v.Conflicted }}, nil
 		case "~n":
 			p.pos += 2
 			return p.parseNamePattern()
@@ -205,8 +209,8 @@ func (p *parser) at(c byte) bool {
 
 // View adapts a package row to the filter view. The adapter lives here so the
 // filter package stays independent of the state package.
-func View(name string, installed, upgradable, broken bool) PkgView {
-	return PkgView{Name: name, Installed: installed, Upgradable: upgradable, Broken: broken}
+func View(name string, installed, upgradable, broken, conflicted bool) PkgView {
+	return PkgView{Name: name, Installed: installed, Upgradable: upgradable, Broken: broken, Conflicted: conflicted}
 }
 
 // Apply returns the rows matching pred (all rows when pred is nil).

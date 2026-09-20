@@ -34,6 +34,7 @@ const (
 	ScreenVersions
 	ScreenReadme
 	ScreenHelp
+	ScreenResolver
 )
 
 type PromptKind int
@@ -97,6 +98,14 @@ type Model struct {
 	managerCursor int                                // cursor on the manager switcher screen
 
 	planSizes     map[string]int64 // name -> unpacked size shown in the plan screen
+	planGate      bool             // the Yes/No conflict popup is up on the plan screen
+	resolvedSig   string           // plan signature the conflict state was last resolved for
+
+	resolverDest    string // destination of the cell on the resolver screen
+	resolverName    string // package on the resolver screen
+	resolverFrom    Screen // screen to return to when the resolver closes
+	resolverCursor  int    // cursor over the flat option list of the resolver
+
 	applyBatches  []applyBatch     // queued (destination, manager) batches for the running apply
 	applyBatchIdx int
 	applyDests    []string          // every destination the running apply touches, in order
@@ -645,13 +654,10 @@ type planGroup struct {
 	invalid  bool // destination marked under two managers: skipped, not executed
 }
 
-// planGroups derives the ordered (destination, manager) groups of all pending
-// marks across every live destination and manager. In project mode only the
-// active adapter's marks participate (per-adapter isolation: a plan built
-// under one adapter never carries another adapter's operations). A group
-// whose destination carries marks of two different managers is flagged
-// invalid (spec: one-manager-per-destination guard).
-func (m Model) planGroups() []planGroup {
+// planOps collects every executable pending mark as an op (holds excluded; in
+// project mode only the active adapter's marks participate, per-adapter
+// isolation). The order is stable: live destinations, then row order.
+func (m Model) planOps() []domain.Op {
 	var ops []domain.Op
 	for _, dest := range m.liveDests() {
 		ps := m.state.Prefixes[dest]
@@ -670,7 +676,42 @@ func (m Model) planGroups() []planGroup {
 			}
 		}
 	}
-	plan := &domain.Plan{Ops: ops}
+	return ops
+}
+
+// planSignature is a stable string over the executable pending marks; it
+// changes exactly when the set of operations to resolve changes.
+func (m Model) planSignature() string {
+	ops := append([]domain.Op(nil), m.planOps()...)
+	sort.Slice(ops, func(i, j int) bool {
+		a, b := ops[i], ops[j]
+		if a.Destination != b.Destination {
+			return a.Destination < b.Destination
+		}
+		if a.Manager != b.Manager {
+			return a.Manager < b.Manager
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if int(a.Mark) != int(b.Mark) {
+			return int(a.Mark) < int(b.Mark)
+		}
+		return a.Version < b.Version
+	})
+	var b strings.Builder
+	for _, op := range ops {
+		fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%d\x00%s;", op.Destination, op.Manager, op.Name, int(op.Mark), op.Version)
+	}
+	return b.String()
+}
+
+// planGroups derives the ordered (destination, manager) groups of all pending
+// marks across every live destination and manager. A group whose destination
+// carries marks of two different managers is flagged invalid (spec:
+// one-manager-per-destination guard).
+func (m Model) planGroups() []planGroup {
+	plan := &domain.Plan{Ops: m.planOps()}
 	invalid := map[string]bool{}
 	for _, d := range plan.InvalidDestinations() {
 		invalid[d] = true
@@ -710,10 +751,463 @@ func (m Model) pendingOps() int {
 	return n
 }
 
-// openPlan shows the plan preview and starts fetching install sizes.
+type resolveMsg struct {
+	dest      string
+	manager   string
+	conflicts []ecosystem.Conflict
+	err       error
+}
+
+// resolveOneCmd asks one manager to resolve the pending operations of one
+// destination in the background; its reported conflicts are stored per
+// (destination, package). Failures are non-fatal: the previous state stands.
+func resolveOneCmd(eco ecosystem.Ecosystem, dest, manager string, items []ecosystem.MarkedItem) tea.Cmd {
+	return func() tea.Msg {
+		_, conflicts, err := eco.Resolve(ecosystem.Intent{Env: ecosystem.Environment{ID: dest}, Items: items})
+		if err != nil {
+			return resolveMsg{dest: dest, manager: manager, err: err}
+		}
+		return resolveMsg{dest: dest, manager: manager, conflicts: conflicts}
+	}
+}
+
+// resolveGroupsCmd starts a background resolve for every valid
+// (destination, manager) group that has pending operations.
+func (m Model) resolveGroupsCmd() tea.Cmd {
+	type job struct {
+		eco     ecosystem.Ecosystem
+		dest    string
+		manager string
+		items   []ecosystem.MarkedItem
+	}
+	var jobs []job
+	seen := map[string]bool{}
+	for _, g := range m.planGroups() {
+		if g.invalid {
+			continue
+		}
+		key := g.dest + "\x00" + g.manager
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		eco := m.managers[g.manager]
+		if eco == nil {
+			continue
+		}
+		items := make([]ecosystem.MarkedItem, 0, len(g.installs)+len(g.upgrades)+len(g.removals))
+		for _, p := range g.installs {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpInstall, Name: p.Name, Version: targetVersionFor(p, g.manager)})
+		}
+		for _, p := range g.upgrades {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpUpgrade, Name: p.Name, Version: targetVersionFor(p, g.manager)})
+		}
+		for _, p := range g.removals {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpRemove, Name: p.Name})
+		}
+		jobs = append(jobs, job{eco: eco, dest: g.dest, manager: g.manager, items: items})
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+	cmds := make([]tea.Cmd, 0, len(jobs))
+	for _, j := range jobs {
+		cmds = append(cmds, resolveOneCmd(j.eco, j.dest, j.manager, j.items))
+	}
+	return tea.Batch(cmds...)
+}
+
+// maybeResolveConflicts refreshes the conflict state when the pending-mark
+// set changed since the last resolve. It never blocks: the work runs as a
+// background command (consistent with the other enrichment passes).
+func (m *Model) maybeResolveConflicts() tea.Cmd {
+	sig := m.planSignature()
+	if sig == m.resolvedSig {
+		return nil
+	}
+	m.resolvedSig = sig
+	if sig == "" {
+		for _, ps := range m.state.Prefixes {
+			ps.Conflicts = nil
+			ps.Chosen = nil
+		}
+		return nil
+	}
+	return m.resolveGroupsCmd()
+}
+
+// withConflictRefresh appends the background re-resolution command (when the
+// mark set changed) to a keypress's returned commands.
+func (m Model) withConflictRefresh(cmds ...tea.Cmd) (Model, tea.Cmd) {
+	if c := m.maybeResolveConflicts(); c != nil {
+		cmds = append(cmds, c)
+	}
+	switch len(cmds) {
+	case 0:
+		return m, nil
+	case 1:
+		return m, cmds[0]
+	default:
+		return m, tea.Batch(cmds...)
+	}
+}
+
+// dedupeCopy is one installed copy of a package on one destination.
+type dedupeCopy struct {
+	dest    string
+	version string
+	size    *int64
+}
+
+// dedupeCopies lists the installed copies of name across the loaded
+// destinations of manager (best-ranked first) when the manager advertises
+// HasDedupe; otherwise nil.
+func (m Model) dedupeCopies(managerID, name string) []dedupeCopy {
+	eco := m.managers[managerID]
+	if eco == nil || !eco.Capabilities().HasDedupe {
+		return nil
+	}
+	rankOf := map[string]string{}
+	for _, e := range m.envsByManager[managerID] {
+		rankOf[e.ID] = e.Rank
+	}
+	var out []dedupeCopy
+	for _, e := range m.envsByManager[managerID] {
+		ps := m.state.Prefixes[e.ID]
+		if ps == nil || !ps.Loaded {
+			continue
+		}
+		p := ps.Packages[name]
+		if p == nil || !p.Installed() {
+			continue
+		}
+		out = append(out, dedupeCopy{dest: e.ID, version: p.InstalledVersion, size: p.SizeBytes})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		r1, r2 := rankOf[out[i].dest], rankOf[out[j].dest]
+		switch {
+		case r1 == r2:
+			return out[i].dest < out[j].dest
+		case r1 == "":
+			return false
+		case r2 == "":
+			return true
+		default:
+			return domain.CompareVersions(r1, r2) > 0
+		}
+	})
+	return out
+}
+
+// sumKnownSizes adds the measured sizes of copies; ok is false when any copy
+// has no measurement yet.
+func sumKnownSizes(copies []dedupeCopy) (int64, bool) {
+	total := int64(0)
+	for _, c := range copies {
+		if c.size == nil {
+			return 0, false
+		}
+		total += *c.size
+	}
+	return total, true
+}
+
+func sizeDeltaPtr(copies []dedupeCopy) *int64 {
+	b, ok := sumKnownSizes(copies)
+	if !ok {
+		return nil
+	}
+	d := -b
+	return &d
+}
+
+// buildDedupeConflict turns redundant copies of one package into a conflict
+// with align/consolidate/remove options. The align option keeps the copy at
+// the highest version (best-ranked destination on ties) and removes the rest;
+// each consolidate option keeps exactly one named destination's copy; remove
+// drops every copy.
+func buildDedupeConflict(name string, copies []dedupeCopy) ecosystem.Conflict {
+	bestIdx := 0
+	for i, c := range copies {
+		if domain.CompareVersions(c.version, copies[bestIdx].version) > 0 {
+			bestIdx = i
+		}
+	}
+	best := copies[bestIdx]
+	var parts []string
+	for _, c := range copies {
+		parts = append(parts, fmt.Sprintf("%s on %s", c.version, displayPath(c.dest)))
+	}
+	msg := fmt.Sprintf("redundant copies of %s: %s", name, strings.Join(parts, ", "))
+
+	var options []ecosystem.ResolutionOption
+	others := make([]dedupeCopy, 0, len(copies)-1)
+	for _, c := range copies {
+		if c.dest != best.dest {
+			others = append(others, c)
+		}
+	}
+	options = append(options, ecosystem.ResolutionOption{
+		Label:       fmt.Sprintf("Align to %s (keep on %s)", best.version, displayPath(best.dest)),
+		Description: fmt.Sprintf("remove the other %d copy(ies); the %s copy stays", len(others), best.version),
+		SizeDelta:   sizeDeltaPtr(others),
+		Effect:      ecosystem.ResolutionEffect{Kind: "remove", Name: name, Destinations: destIDs(others)},
+	})
+	for _, c := range copies {
+		if c.dest == best.dest {
+			continue
+		}
+		rest := make([]dedupeCopy, 0, len(copies)-1)
+		for _, o := range copies {
+			if o.dest != c.dest {
+				rest = append(rest, o)
+			}
+		}
+		options = append(options, ecosystem.ResolutionOption{
+			Label:       fmt.Sprintf("Consolidate to %s (%s)", displayPath(c.dest), c.version),
+			Description: fmt.Sprintf("keep only the copy on %s; remove the other %d copy(ies)", displayPath(c.dest), len(rest)),
+			SizeDelta:   sizeDeltaPtr(rest),
+			Effect:      ecosystem.ResolutionEffect{Kind: "remove", Name: name, Destinations: destIDs(rest)},
+		})
+	}
+	options = append(options, ecosystem.ResolutionOption{
+		Label:       "Remove all copies",
+		Description: fmt.Sprintf("remove %s from all %d destination(s)", name, len(copies)),
+		SizeDelta:   sizeDeltaPtr(copies),
+		Effect:      ecosystem.ResolutionEffect{Kind: "remove", Name: name, Destinations: destIDs(copies)},
+	})
+
+	return ecosystem.Conflict{Package: name, Message: msg, Options: options}
+}
+
+func destIDs(copies []dedupeCopy) []string {
+	out := make([]string, 0, len(copies))
+	for _, c := range copies {
+		out = append(out, c.dest)
+	}
+	return out
+}
+
+// dedupeConflictFor derives the redundancy conflict for (dest, name) under
+// one manager: non-nil when dest holds an installed copy and at least one
+// other loaded destination of the manager does too.
+func (m Model) dedupeConflictFor(managerID, dest, name string) *ecosystem.Conflict {
+	copies := m.dedupeCopies(managerID, name)
+	if len(copies) < 2 {
+		return nil
+	}
+	for _, c := range copies {
+		if c.dest == dest {
+			cf := buildDedupeConflict(name, copies)
+			return &cf
+		}
+	}
+	return nil
+}
+
+// cellConflicted reports whether (dest, name) is involved in an unresolved
+// conflict: one the resolver reported for that destination, or a derived
+// cross-destination redundancy under any manager owning it. A valid recorded
+// resolution pick suppresses the cell until the cell's marks change.
+func (m Model) cellConflicted(dest, name string) bool {
+	ps := m.state.Prefixes[dest]
+	stored := false
+	if ps != nil && len(ps.UnresolvedConflicts(name)) > 0 {
+		stored = true
+	}
+	derived := false
+	for _, id := range m.managerIDs() {
+		if m.dedupeConflictFor(id, dest, name) != nil {
+			derived = true
+			break
+		}
+	}
+	if !stored && !derived {
+		return false
+	}
+	if ps != nil && ps.ResolutionChosen(name) {
+		return false
+	}
+	return true
+}
+
+// conflictsForCell merges the resolver-reported and derived conflicts of one
+// cell (chosen picks included, so a just-resolved cell can still show what it
+// was about).
+func (m Model) conflictsForCell(dest, name string) []ecosystem.Conflict {
+	var out []ecosystem.Conflict
+	if ps := m.state.Prefixes[dest]; ps != nil {
+		out = append(out, ps.Conflicts[name]...)
+	}
+	for _, id := range m.managerIDs() {
+		if cf := m.dedupeConflictFor(id, dest, name); cf != nil {
+			out = append(out, *cf)
+		}
+	}
+	return out
+}
+
+// rowConflicted reports whether any destination of the active manager carries
+// an unresolved conflict for the aggregated row.
+func (m Model) rowConflicted(u domain.UnifiedRow) bool {
+	for _, e := range m.envs() {
+		if m.cellConflicted(e.ID, u.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// conflictDestFor returns the first destination of the active manager with an
+// unresolved conflict for name ("" when none).
+func (m Model) conflictDestFor(name string) string {
+	for _, e := range m.envs() {
+		if m.cellConflicted(e.ID, name) {
+			return e.ID
+		}
+	}
+	return ""
+}
+
+// nextConflictCell returns the first plan op cell with an unresolved
+// conflict, in plan order ("" when none).
+func (m Model) nextConflictCell() (string, string) {
+	for _, g := range m.planGroups() {
+		if g.invalid {
+			continue
+		}
+		for _, list := range [][]*domain.PkgState{g.installs, g.upgrades, g.removals} {
+			for _, p := range list {
+				if m.cellConflicted(g.dest, p.Name) {
+					return g.dest, p.Name
+				}
+			}
+		}
+	}
+	return "", ""
+}
+
+// planHasConflicts reports whether any op of the current plan touches an
+// unresolved conflict cell.
+func (m Model) planHasConflicts() bool {
+	dest, _ := m.nextConflictCell()
+	return dest != ""
+}
+
+// managerForDest returns the manager id that owns dest (active manager as
+// fallback).
+func (m Model) managerForDest(dest string) string {
+	for _, id := range m.managerIDs() {
+		for _, e := range m.envsByManager[id] {
+			if e.ID == dest {
+				return id
+			}
+		}
+	}
+	return m.activeManagerID
+}
+
+// openResolver shows the per-package resolution screen for one cell.
+func (m Model) openResolver(dest, name string, from Screen) (Model, tea.Cmd) {
+	m.screen = ScreenResolver
+	m.resolverDest = dest
+	m.resolverName = name
+	m.resolverFrom = from
+	m.resolverCursor = 0
+	return m, nil
+}
+
+// resolverOptionRows is the flat option list of the resolver screen: one
+// entry per option of each conflict of the cell.
+func (m Model) resolverOptionRows() []ecosystem.ResolutionOption {
+	var out []ecosystem.ResolutionOption
+	for _, cf := range m.conflictsForCell(m.resolverDest, m.resolverName) {
+		out = append(out, cf.Options...)
+	}
+	return out
+}
+
+// applyResolutionOption applies the chosen option's effect to the marks and
+// records the pick on every cell involved in the conflict.
+func (m *Model) applyResolutionOption(opt ecosystem.ResolutionOption) {
+	name := opt.Effect.Name
+	if name == "" {
+		name = m.resolverName
+	}
+	dests := opt.Effect.Destinations
+	if len(dests) == 0 {
+		dests = []string{m.resolverDest}
+	}
+	mgrOf := func(d string) string { return m.managerForDest(d) }
+	switch opt.Effect.Kind {
+	case "install":
+		for _, d := range dests {
+			m.setInstallMarkForDest(d, name)
+			if ps := m.state.Prefixes[d]; ps != nil {
+				if p := ps.Packages[name]; p != nil {
+					p.SetMarkEntry(mgrOf(d), domain.MarkEntry{Mark: domain.MarkInstall, TargetVersion: opt.Effect.TargetVersion})
+				}
+			}
+		}
+	case "upgrade":
+		for _, d := range dests {
+			if ps := m.state.Prefixes[d]; ps != nil {
+				if p := ps.Packages[name]; p != nil {
+					p.SetMarkEntry(mgrOf(d), domain.MarkEntry{Mark: domain.MarkUpgrade, TargetVersion: opt.Effect.TargetVersion})
+				}
+			}
+		}
+	case "remove":
+		for _, d := range dests {
+			if ps := m.state.Prefixes[d]; ps != nil {
+				if p := ps.Packages[name]; p != nil {
+					p.SetMarkEntry(mgrOf(d), domain.MarkEntry{Mark: domain.MarkRemove})
+				}
+			}
+		}
+	case "skip":
+		for _, d := range dests {
+			m.state.Revert(d, name, mgrOf(d))
+		}
+	}
+	for _, ps := range m.state.Prefixes {
+		if len(ps.Conflicts[name]) > 0 || m.cellConflicted(ps.ID, name) {
+			ps.RecordResolution(name, opt.Label)
+		}
+	}
+	m.notice = fmt.Sprintf("%s: %s", name, opt.Label)
+	m.afterResolutionChoice()
+}
+
+// afterResolutionChoice keeps the resolver open while the same cell is still
+// conflicted, walks to the next conflicted plan cell when opened from the
+// gate, and otherwise returns to the opening screen (re-evaluating the gate).
+func (m *Model) afterResolutionChoice() {
+	if m.cellConflicted(m.resolverDest, m.resolverName) {
+		m.resolverCursor = 0
+		return
+	}
+	if m.resolverFrom == ScreenPlan {
+		if dest, name := m.nextConflictCell(); dest != "" {
+			m.resolverDest = dest
+			m.resolverName = name
+			m.resolverCursor = 0
+			return
+		}
+	}
+	m.screen = m.resolverFrom
+	if m.screen == ScreenPlan {
+		m.planGate = m.planHasConflicts()
+	}
+}
+
+// openPlan shows the plan preview and starts fetching install sizes. When a
+// pending operation touches an unresolved conflict, the Yes/No gate popup is
+// raised on top of the plan (spec: plan gate).
 func (m Model) openPlan() (Model, tea.Cmd) {
 	m.screen = ScreenPlan
 	m.planSizes = map[string]int64{}
+	m.planGate = m.planHasConflicts()
 	var cmds []tea.Cmd
 	for _, g := range m.planGroups() {
 		for _, p := range g.installs {
@@ -864,7 +1358,8 @@ func (ab applyBatch) cmdLine() string { return ab.batch.Label + " @ " + displayP
 // manager, locks are taken for all touched destinations before any batch
 // runs, versions are snapshotted for post-apply reconciliation, and the
 // first batch launches. Invalid groups (one-manager-per-destination
-// violations) are skipped and reported in the apply log.
+// violations) and operations involved in unresolved conflicts are skipped
+// and reported in the apply log; conflicting marks stay pending for a retry.
 func (m Model) startApply() (Model, tea.Cmd) {
 	if m.state.Applying {
 		m.notice = "apply already in progress"
@@ -889,17 +1384,37 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	}
 	var batches []applyBatch
 	dests := []string{}
+	var conflictSkips []string
 	for _, g := range valid {
 		eco := m.managers[g.manager]
 		items := make([]ecosystem.MarkedItem, 0, len(g.installs)+len(g.upgrades)+len(g.removals))
+		var skipped []string
 		for _, p := range g.installs {
+			if m.cellConflicted(g.dest, p.Name) {
+				skipped = append(skipped, "install "+p.Name)
+				continue
+			}
 			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpInstall, Name: p.Name, Version: targetVersionFor(p, g.manager)})
 		}
 		for _, p := range g.upgrades {
+			if m.cellConflicted(g.dest, p.Name) {
+				skipped = append(skipped, "upgrade "+p.Name)
+				continue
+			}
 			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpUpgrade, Name: p.Name, Version: targetVersionFor(p, g.manager)})
 		}
 		for _, p := range g.removals {
+			if m.cellConflicted(g.dest, p.Name) {
+				skipped = append(skipped, "remove "+p.Name)
+				continue
+			}
 			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpRemove, Name: p.Name})
+		}
+		for _, s := range skipped {
+			conflictSkips = append(conflictSkips, fmt.Sprintf("skipped %s on %s — unresolved conflict; resolve it and re-apply", s, displayPath(g.dest)))
+		}
+		if len(items) == 0 {
+			continue
 		}
 		dests = append(dests, g.dest)
 		plan, _, err := eco.Resolve(ecosystem.Intent{Env: ecosystem.Environment{ID: g.dest}, Items: items})
@@ -912,6 +1427,10 @@ func (m Model) startApply() (Model, tea.Cmd) {
 		}
 	}
 	if len(batches) == 0 {
+		if m.planHasConflicts() {
+			m.notice = "no operation can run — every one is blocked by an unresolved conflict; resolve them (r on a marked row) and re-apply"
+			return m, nil
+		}
 		m.screen = ScreenList
 		return m, nil
 	}
@@ -941,6 +1460,9 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	m.applyDone = false
 	m.applyAborted = false
 	m.applyLog = nil
+	for _, s := range conflictSkips {
+		m.applyLog = append(m.applyLog, s)
+	}
 	for _, g := range m.planGroups() {
 		if g.invalid {
 			m.applyLog = append(m.applyLog, "skipped "+displayPath(g.dest)+" — destination is marked under two managers; clear one manager's marks there to run it")
@@ -1163,7 +1685,13 @@ func (m *Model) applyLoaded(prefixID string, pkgs map[string]*domain.PkgState) {
 			}
 		}
 	}
-	m.state.Prefixes[prefixID] = &domain.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
+	ns := &domain.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
+	if old != nil {
+		// Conflict state outlives a reload; the next resolve cycle refreshes it.
+		ns.Conflicts = old.Conflicts
+		ns.Chosen = old.Chosen
+	}
+	m.state.Prefixes[prefixID] = ns
 	if m.searchActive && prefixID == m.state.ActivePrefixID {
 		m.resetSearch() // the reload replaced the rows the search view referenced
 	}
@@ -1208,7 +1736,7 @@ func (m Model) unifiedDisplayRows() []domain.UnifiedRow {
 	if m.filterPred != nil {
 		kept := make([]domain.UnifiedRow, 0, len(rows))
 		for _, u := range rows {
-			v := filter.View(u.Name, u.Installed(), u.Upgradable(), u.Unhealthy())
+			v := filter.View(u.Name, u.Installed(), u.Upgradable(), u.Unhealthy(), m.rowConflicted(u))
 			if m.filterPred(v) {
 				kept = append(kept, u)
 			}

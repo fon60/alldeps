@@ -152,12 +152,23 @@ func TestResolveBatchesByOpKindWithNoConflicts(t *testing.T) {
 			{Op: ecosystem.OpInstall, Name: "baz"},
 		},
 	}
-	plan, conflicts, err := New().Resolve(intent)
+	eco := New()
+	plan, conflicts, err := eco.Resolve(intent)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The npm resolver is inert with respect to conflicts (the feature is
+	// dormant for npm except the dedupe flavor), while dedupe itself is
+	// advertised so the app can derive redundancy conflicts.
 	if len(conflicts) != 0 {
 		t.Fatalf("npm resolver must not produce conflicts, got %+v", conflicts)
+	}
+	caps := eco.Capabilities()
+	if !caps.HasDedupe {
+		t.Fatal("npm must advertise HasDedupe (the Node family carries redundant copies)")
+	}
+	if caps.HasConflictResolution {
+		t.Fatal("npm must not claim resolver-produced conflict resolution")
 	}
 	if len(plan.Batches) != 3 {
 		t.Fatalf("got %d batches, want 3 (install, upgrade, remove): %+v", len(plan.Batches), plan.Batches)

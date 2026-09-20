@@ -96,10 +96,24 @@ type Plan struct {
 	Batches []Batch
 }
 
-// ResolutionOption is one way a user can resolve a Conflict.
+// ResolutionEffect is the machine-applicable outcome of choosing an option:
+// which marks it sets where. An empty Kind means the option only records a
+// decision (e.g. "keep as is") and changes no marks.
+type ResolutionEffect struct {
+	Kind          string   // "install" | "upgrade" | "remove" | "skip"
+	Name          string   // package to act on; "" = the conflict's package
+	TargetVersion string   // pinned target for install/upgrade; "" = latest
+	Destinations  []string // destinations to act on; empty = the conflict's own
+}
+
+// ResolutionOption is one way a user can resolve a Conflict. Description is
+// the stated consequence shown before the user commits; SizeDelta is an
+// approximate disk change in bytes (negative frees space, nil = unknown).
 type ResolutionOption struct {
 	Label       string
 	Description string
+	SizeDelta   *int64
+	Effect      ResolutionEffect
 }
 
 // Conflict is one clash the resolver could not fold into a plan; it carries
@@ -111,12 +125,15 @@ type Conflict struct {
 }
 
 // Caps advertises what an ecosystem can do so the app can adapt without
-// type-switching on the manager id.
+// type-switching on the manager id. HasDedupe marks managers whose installed
+// copies can be redundant across destinations (the Node family), so the app
+// can derive align/consolidate/remove conflicts from its own list state.
 type Caps struct {
 	HasConflictResolution bool
 	HasNativeLock         bool
 	GlobalScope           bool
 	ProjectScope          bool
+	HasDedupe             bool
 }
 
 // Doc is the manager-agnostic package document shown on the info screen,

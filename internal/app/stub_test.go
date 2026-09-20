@@ -21,6 +21,7 @@ type stubEco struct {
 	latest      map[string]string
 	latestErr   error
 	sizes       map[string]int64
+	conflictsFn func(intent ecosystem.Intent) []ecosystem.Conflict // per-intent conflict report for Resolve
 	execOut     string
 	execErr     error
 	execFn      func(batch ecosystem.Batch) (string, error) // per-batch override for failure tests
@@ -95,7 +96,11 @@ func (s *stubEco) Resolve(intent ecosystem.Intent) (ecosystem.Plan, []ecosystem.
 		}
 		batches = append(batches, ecosystem.Batch{Op: op, Items: items, Label: stubOpNames[op] + " " + strings.Join(args, " ")})
 	}
-	return ecosystem.Plan{Env: intent.Env, Batches: batches}, nil, nil
+	var conflicts []ecosystem.Conflict
+	if s.conflictsFn != nil {
+		conflicts = s.conflictsFn(intent)
+	}
+	return ecosystem.Plan{Env: intent.Env, Batches: batches}, conflicts, nil
 }
 
 func (s *stubEco) Execute(ctx context.Context, env ecosystem.Environment, batch ecosystem.Batch) (string, error) {
