@@ -11,9 +11,43 @@ type Op struct {
 	Version     string // pinned target for install/upgrade; "" = latest
 }
 
-// Plan groups pending operations by destination.
+// Plan is the ordered set of all pending operations.
 type Plan struct {
 	Ops []Op
+}
+
+// Group is one (destination, manager) group: every operation that one manager
+// performs on one destination in a single apply run.
+type Group struct {
+	Destination string
+	Manager     string
+	Ops         []Op
+}
+
+// Groups splits the plan's operations into (destination, manager) groups,
+// ordered by destination then manager (both ascending), regardless of the
+// input order.
+func (p *Plan) Groups() []Group {
+	ops := make([]Op, len(p.Ops))
+	copy(ops, p.Ops)
+	sort.SliceStable(ops, func(i, j int) bool {
+		if ops[i].Destination != ops[j].Destination {
+			return ops[i].Destination < ops[j].Destination
+		}
+		if ops[i].Manager != ops[j].Manager {
+			return ops[i].Manager < ops[j].Manager
+		}
+		return ops[i].Name < ops[j].Name
+	})
+	var out []Group
+	for _, op := range ops {
+		if n := len(out); n > 0 && out[n-1].Destination == op.Destination && out[n-1].Manager == op.Manager {
+			out[n-1].Ops = append(out[n-1].Ops, op)
+			continue
+		}
+		out = append(out, Group{Destination: op.Destination, Manager: op.Manager, Ops: []Op{op}})
+	}
+	return out
 }
 
 // InvalidDestinations returns the destinations that violate the

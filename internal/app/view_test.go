@@ -127,7 +127,7 @@ func TestHelpScreenListsAllKeysAndReturns(t *testing.T) {
 	out := render80x24(m)
 	for _, want := range []string{
 		"Help — key bindings",
-		"install / upgrade to latest",
+		"install (popup picks destinations) / upgrade to latest",
 		"cycle sort: name, version, size, state",
 		"j loads more at the end",
 	} {
@@ -176,8 +176,9 @@ func TestStatusLineShowsAllItems(t *testing.T) {
 	for _, want := range []string{
 		"~/.nvm/versions/node/v24.12.0", // prefix path (tilde-shown)
 		"f:(none)",                      // active filter
-		"2/2 packages",                  // visible count
+		"2/2 pkgs",                      // visible count
 		"0 pending",                     // pending mark count
+		"mgr:stub",                      // active manager
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status line missing %q in:\n%s", want, out)
@@ -192,14 +193,14 @@ func TestStatusLinePendingCountUpdates(t *testing.T) {
 		t.Fatalf("expected 0 pending initially:\n%s", out)
 	}
 
-	m.state.SetMark("/p", "alpha", domain.MarkInstall)
-	m.state.SetMark("/p", "beta", domain.MarkRemove)
+	m.state.SetMark("/p", "alpha", "stub", domain.MarkInstall)
+	m.state.SetMark("/p", "beta", "stub", domain.MarkRemove)
 	out = render80x24(m)
 	if !strings.Contains(out, "2 pending") {
 		t.Fatalf("expected 2 pending after marking:\n%s", out)
 	}
 
-	m.state.ClearAllMarks("/p")
+	m.state.ClearAllMarks("/p", "stub")
 	out = render80x24(m)
 	if !strings.Contains(out, "0 pending") {
 		t.Fatalf("expected 0 pending after clearing:\n%s", out)
@@ -224,7 +225,7 @@ func TestStatusLineVisibleCountRespectsFilter(t *testing.T) {
 	}
 	m.filterPred = pred
 	out := render80x24(m)
-	if !strings.Contains(out, "1/2 packages") {
+	if !strings.Contains(out, "1/2 pkgs") {
 		t.Fatalf("expected 1/2 visible with ~u filter:\n%s", out)
 	}
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,21 +19,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.clampCursor()
 	case discoverMsg:
-		if msg.err != nil {
-			m.notice = "prefix scan failed: " + msg.err.Error()
-			return m, nil
+		m.envsByManager = msg.envsByManager
+		for _, id := range m.managerIDs() {
+			if err := msg.errs[id]; err != nil {
+				m.notice = "manager " + id + " scan failed: " + err.Error()
+			}
 		}
-		m.envs = msg.envs
 		if m.state.ActivePrefixID == "" {
+			envs := m.envs()
 			id := ""
-			for _, e := range msg.envs {
+			for _, e := range envs {
 				if e.Meta[ecosystem.MetaActive] == "1" {
 					id = e.ID
 					break
 				}
 			}
-			if id == "" && len(msg.envs) > 0 {
-				id = msg.envs[0].ID
+			if id == "" && len(envs) > 0 {
+				id = envs[0].ID
 			}
 			if id == "" {
 				return m, nil
@@ -50,37 +53,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if _, ok := m.state.Prefixes[id]; !ok {
 				m.state.Prefixes[id] = &domain.PrefixState{ID: id, Packages: map[string]*domain.PkgState{}}
 			}
-			return m, m.loadEnvCmd(id)
+			return m, m.loadAllEnvsCmd()
 		}
 		if m.screen == ScreenPicker {
 			m.pickerLocked = m.lockedEnvs()
-			for i, e := range m.envs {
+			for i, e := range m.envs() {
 				if !m.pickerLocked[e.ID] {
 					m.pickerCursor = i
 					break
 				}
 			}
-		}
-		return m, m.dropVanishedEnvs()
-	case refreshMsg:
-		m.envs = msg.envs
-		if msg.scanErr != nil {
-			m.notice = "prefix scan failed: " + msg.scanErr.Error()
-		}
-		if msg.loadErr != nil {
-			m.notice = "reload failed for " + msg.prefixID + ": " + msg.loadErr.Error()
-		} else if msg.pkgs != nil {
-			m.applyLoaded(msg.prefixID, msg.pkgs)
-			names := make([]string, 0, len(msg.pkgs))
-			for name := range msg.pkgs {
-				names = append(names, name)
-			}
-			cmds := []tea.Cmd{measureSizesCmd(msg.prefixID, names)}
-			if len(names) > 0 {
-				cmds = append(cmds, m.checkOutdatedCmd(msg.prefixID, names))
-			}
-			m.clampCursor()
-			return m, tea.Batch(cmds...)
 		}
 		return m, m.dropVanishedEnvs()
 	case loadEnvMsg:
@@ -193,14 +175,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setReadme(msg.text)
 	case applyBatchMsg:
+		ab := m.applyBatches[msg.idx]
 		if msg.err != nil {
 			m.applyFailed++
 		}
 		m.appendApplyLog(msg.cmdLine, msg.output, msg.err)
 		m.applyCancel = nil
 		m.applyBatchIdx = msg.idx + 1
+		switch {
+		case m.applyAborted:
+			// User aborted: the entire remainder of the plan is dropped.
+			m.applyBatchIdx = len(m.applyBatches)
+			m.applyLog = append(m.applyLog, "aborted by user — remaining invocations not started")
+		case msg.err != nil:
+			// Per-group failure isolation: the rest of this group's
+			// invocations are not started; other groups still run.
+			skipped := 0
+			for m.applyBatchIdx < len(m.applyBatches) &&
+				m.applyBatches[m.applyBatchIdx].dest == ab.dest &&
+				m.applyBatches[m.applyBatchIdx].manager == ab.manager {
+				m.applyBatchIdx++
+				skipped++
+			}
+			m.appendGroupResult(ab, false, skipped)
+		case m.groupComplete(ab):
+			m.appendGroupResult(ab, true, 0)
+		}
 		if m.applyBatchIdx < len(m.applyBatches) {
-			m.applyCurrent = m.applyBatches[m.applyBatchIdx].Label
+			m.applyCurrent = m.applyBatches[m.applyBatchIdx].cmdLine()
 		} else {
 			m.applyCurrent = ""
 		}
@@ -208,33 +210,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case applyReloadMsg:
 		m.state.Applying = false
-		if msg.err != nil {
-			m.notice = "apply finished but re-read failed: " + msg.err.Error()
+		if len(msg.errs) > 0 {
+			var names []string
+			for d := range msg.errs {
+				names = append(names, displayPath(d))
+			}
+			sort.Strings(names)
+			m.notice = "apply finished but re-read failed for " + strings.Join(names, ", ")
 		} else {
-			if old := m.state.Prefixes[msg.prefixID]; old != nil {
-				for name, p := range old.Packages {
-					if p.Mark == domain.MarkInstall && !p.Installed() {
-						if _, ok := msg.pkgs[name]; !ok {
-							msg.pkgs[name] = &domain.PkgState{
-								Name:          p.Name,
-								LatestVersion: p.LatestVersion,
-								Description:   p.Description,
-								Origin:        p.Origin,
-								Mark:          p.Mark,
-								TargetVersion: p.TargetVersion,
+			for dest, pkgs := range msg.pkgsByDest {
+				if old := m.state.Prefixes[dest]; old != nil {
+					for name, p := range old.Packages {
+						if hasInstallMark(p) && !p.Installed() {
+							if _, ok := pkgs[name]; !ok {
+								pkgs[name] = &domain.PkgState{
+									Name:          p.Name,
+									LatestVersion: p.LatestVersion,
+									Description:   p.Description,
+									Origin:        p.Origin,
+									Marks:         p.Marks,
+								}
 							}
 						}
 					}
 				}
+				m.applyLoaded(dest, pkgs)
 			}
-			m.applyLoaded(msg.prefixID, msg.pkgs)
-			m.reconcileMarks()
+			for _, dest := range m.applyDests {
+				if _, ok := msg.pkgsByDest[dest]; ok {
+					m.reconcileDestMarks(dest)
+				}
+			}
 			if m.applyFailed > 0 {
 				m.notice = fmt.Sprintf("apply finished with %d failed operation(s); list re-read from disk", m.applyFailed)
 			} else {
 				m.notice = "apply finished; list re-read from disk"
 			}
 		}
+		for _, d := range m.applyLocks {
+			if m.locks != nil {
+				m.locks.Release(d)
+			}
+		}
+		m.applyLocks = nil
 		m.applyDone = true
 		m.clampCursor()
 	case tea.KeyMsg:
@@ -244,6 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// continues and q quits.
 			if !m.applyDone {
 				if msg.String() == "ctrl+c" && m.applyCancel != nil {
+					m.applyAborted = true
 					m.applyCancel()
 				}
 				return m, nil
@@ -301,6 +320,12 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.screen == ScreenPicker {
 		return m.updatePicker(msg)
 	}
+	if m.screen == ScreenManager {
+		return m.updateManager(msg)
+	}
+	if m.screen == ScreenTargets {
+		return m.updateTargets(msg)
+	}
 	if m.screen == ScreenPlan {
 		return m.updatePlan(msg)
 	}
@@ -323,7 +348,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.notice = "search cleared — showing installed packages"
 		}
 	case "q", "Q":
-		if m.state.PendingMarkCount(m.state.ActivePrefixID) > 0 {
+		if m.state.TotalPending() > 0 {
 			m.quitConfirm = true
 			return m, nil
 		}
@@ -333,7 +358,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = ScreenPicker
 		m.pickerLocked = m.lockedEnvs()
 		m.pickerCursor = 0
-		for i, e := range m.envs {
+		for i, e := range m.envs() {
 			if e.ID == m.state.ActivePrefixID {
 				m.pickerCursor = i
 				break
@@ -341,12 +366,21 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "e":
 		return m, m.cycleEnv()
+	case "M":
+		m.screen = ScreenManager
+		m.managerCursor = 0
+		for i, id := range m.managerIDs() {
+			if id == m.activeManagerID {
+				m.managerCursor = i
+				break
+			}
+		}
 	case "g":
 		if m.state.Applying {
 			m.notice = "apply already in progress"
 			return m, nil
 		}
-		if m.state.PendingMarkCount(m.state.ActivePrefixID) == 0 {
+		if len(m.planGroups()) == 0 {
 			m.notice = "no pending changes to apply"
 			return m, nil
 		}
@@ -375,13 +409,19 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.markRevert()
 	case "U":
-		if n := m.state.MarkAllUpgradable(m.state.ActivePrefixID); n == 0 {
+		n := 0
+		for _, e := range m.envs() {
+			n += m.state.MarkAllUpgradable(e.ID, m.activeManagerID)
+		}
+		if n == 0 {
 			m.notice = "no upgradable packages to mark"
 		} else {
 			m.notice = fmt.Sprintf("%d packages marked for upgrade", n)
 		}
 	case "x":
-		m.state.ClearAllMarks(m.state.ActivePrefixID)
+		for _, e := range m.envs() {
+			m.state.ClearAllMarks(e.ID, m.activeManagerID)
+		}
 		m.notice = "all marks cleared"
 	case "enter", "d":
 		return m.openInfo()
@@ -414,12 +454,12 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pickerCursor--
 		}
 	case "down", "j":
-		if m.pickerCursor < len(m.envs)-1 {
+		if m.pickerCursor < len(m.envs())-1 {
 			m.pickerCursor++
 		}
 	case "enter":
-		if m.pickerCursor < len(m.envs) {
-			id := m.envs[m.pickerCursor].ID
+		if m.pickerCursor < len(m.envs()) {
+			id := m.envs()[m.pickerCursor].ID
 			if m.pickerLocked[id] {
 				m.notice = "environment " + displayPath(id) + " is open in another npmitude — choose a different environment"
 				return m, nil
@@ -427,6 +467,85 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = ScreenList
 			return m, m.switchEnv(id)
 		}
+	}
+	return m, nil
+}
+
+// updateManager handles keys on the manager switcher. Selecting a manager
+// changes only which mark-set is editable and which adapter executes;
+// installed state (shared per destination) and all pending marks are kept.
+// Destinations of the new manager that were never loaded start loading now —
+// already-loaded ones are not re-fetched.
+func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	ids := m.managerIDs()
+	switch msg.String() {
+	case "esc", "q":
+		m.screen = ScreenList
+		return m, nil
+	case "up", "k":
+		if m.managerCursor > 0 {
+			m.managerCursor--
+		}
+	case "down", "j":
+		if m.managerCursor < len(ids)-1 {
+			m.managerCursor++
+		}
+	case "enter":
+		if m.managerCursor < len(ids) {
+			m.activeManagerID = ids[m.managerCursor]
+			m.screen = ScreenList
+			return m, m.loadAllEnvsCmd()
+		}
+	}
+	return m, nil
+}
+
+// updateTargets handles keys on the install-target popup: multi-select the
+// eligible destinations (space toggles) and confirm with enter. Cancelling
+// records nothing.
+func (m Model) updateTargets(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.installTargets)
+	switch msg.String() {
+	case "esc", "q":
+		m.screen = ScreenList
+		return m, nil
+	case "up", "k":
+		if m.installTargetCursor > 0 {
+			m.installTargetCursor--
+		}
+	case "down", "j":
+		if m.installTargetCursor < n-1 {
+			m.installTargetCursor++
+		}
+	case " ":
+		if m.installTargetCursor < n {
+			id := m.installTargets[m.installTargetCursor].ID
+			m.installTargetSel[id] = !m.installTargetSel[id]
+		}
+	case "enter":
+		changed := 0
+		for _, e := range m.installTargets {
+			marked := false
+			if ps := m.state.Prefixes[e.ID]; ps != nil {
+				if p := ps.Packages[m.installName]; p != nil && p.MarkFor(m.activeManagerID) == domain.MarkInstall {
+					marked = true
+				}
+			}
+			switch {
+			case m.installTargetSel[e.ID] && !marked:
+				m.setInstallMarkForDest(e.ID, m.installName)
+				changed++
+			case !m.installTargetSel[e.ID] && marked:
+				m.state.Revert(e.ID, m.installName, m.activeManagerID)
+				changed++
+			}
+		}
+		if changed > 0 {
+			m.notice = fmt.Sprintf("%s: install mark updated on %d destination(s)", m.installName, changed)
+		} else {
+			m.notice = "no changes"
+		}
+		m.screen = ScreenList
 	}
 	return m, nil
 }
@@ -445,8 +564,14 @@ func (m Model) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateInfo handles keys on the info screen.
+// updateInfo handles keys on the info screen. j/k move the cursor over the
+// per-destination table; + and - mark the package for install or removal
+// against the destination under the cursor only.
 func (m Model) updateInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.envs())
+	if m.infoDestCursor >= n && n > 0 {
+		m.infoDestCursor = n - 1
+	}
 	switch msg.String() {
 	case "esc", "q", "enter", "d":
 		m.screen = ScreenList
@@ -454,6 +579,18 @@ func (m Model) updateInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openVersions()
 	case "C":
 		return m.openReadme()
+	case "up", "k":
+		if m.infoDestCursor > 0 {
+			m.infoDestCursor--
+		}
+	case "down", "j":
+		if m.infoDestCursor < n-1 {
+			m.infoDestCursor++
+		}
+	case "+":
+		m.markDestInstall()
+	case "-":
+		m.markDestRemove()
 	}
 	return m, nil
 }

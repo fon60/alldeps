@@ -23,7 +23,7 @@ func TestInfoScreenInstalledUsesLocalDoc(t *testing.T) {
 		},
 	}
 	m := modelWithLoadedPrefix(t, "/p", "foo")
-	m.eco = s
+	m.managers["stub"] = s
 
 	nextRaw, cmd := m.Update(keyMsg(t, "enter"))
 	if cmd == nil {
@@ -89,8 +89,8 @@ func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 
 	m = m.step(t, keyMsg(t, "enter"))
 	a := m.state.Prefixes["/p"].Packages["alpha"]
-	if a.Mark != domain.MarkUpgrade || a.TargetVersion != "1.5.0" {
-		t.Fatalf("installed pin: mark=%v target=%q", a.Mark, a.TargetVersion)
+	if a.MarkFor("stub") != domain.MarkUpgrade || a.TargetVersionFor("stub") != "1.5.0" {
+		t.Fatalf("installed pin: mark=%v target=%q", a.MarkFor("stub"), a.TargetVersionFor("stub"))
 	}
 	if m.screen != ScreenInfo {
 		t.Fatal("pin should return to the info screen")
@@ -101,14 +101,14 @@ func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 	m.verCursor = 0 // 2.0.0
 	m = m.step(t, keyMsg(t, "enter"))
 	b := m.state.Prefixes["/p"].Packages["beta"]
-	if b.Mark != domain.MarkInstall || b.TargetVersion != "2.0.0" {
-		t.Fatalf("not-installed pin: mark=%v target=%q", b.Mark, b.TargetVersion)
+	if b.MarkFor("stub") != domain.MarkInstall || b.TargetVersionFor("stub") != "2.0.0" {
+		t.Fatalf("not-installed pin: mark=%v target=%q", b.MarkFor("stub"), b.TargetVersionFor("stub"))
 	}
 }
 
 func TestQuitConfirmationProtectsMarks(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.state.SetMark("/p", "alpha", domain.MarkRemove)
+	m.state.SetMark("/p", "alpha", "stub", domain.MarkRemove)
 
 	m = m.step(t, keyMsg(t, "q"))
 	if !m.quitConfirm {
@@ -162,7 +162,7 @@ func TestInfoViewRendersFieldsAndAbsence(t *testing.T) {
 		},
 	}
 	m := modelWithLoadedPrefix(t, "/p", "foo")
-	m.eco = s
+	m.managers["stub"] = s
 	m.state.Prefixes["/p"].Packages["foo"].SizeBytes = ptr(int64(2048))
 
 	nextRaw, cmd := m.Update(keyMsg(t, "enter"))
@@ -196,7 +196,7 @@ func TestReadmeViewLocalAndAbsent(t *testing.T) {
 	s := newStubEco()
 	s.readmes = map[string]string{"foo": "# foo\nreadme body"}
 	m := modelWithLoadedPrefix(t, "/p", "foo")
-	m.eco = s
+	m.managers["stub"] = s
 	m.screen = ScreenInfo
 	m.infoName = "foo"
 

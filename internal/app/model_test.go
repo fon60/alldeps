@@ -21,6 +21,7 @@ func modelWithLoadedPrefix(t *testing.T, prefixID string, names ...string) Model
 	}
 	m.state.Prefixes[prefixID] = &domain.PrefixState{ID: prefixID, Packages: pkgs, Loaded: true}
 	m.state.ActivePrefixID = prefixID
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: prefixID}}
 	return m
 }
 
@@ -42,7 +43,7 @@ func TestSizesMsgFillsRow(t *testing.T) {
 
 func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
-	m.state.SetMark("/p", "alpha", domain.MarkRemove)
+	m.state.SetMark("/p", "alpha", "stub", domain.MarkRemove)
 	m.state.Prefixes["/p"].Packages["alpha"].LatestVersion = "1.1.0"
 
 	fresh := map[string]*domain.PkgState{
@@ -53,7 +54,7 @@ func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 	_, _ = m.Update(loadEnvMsg{prefixID: "/p", pkgs: fresh})
 
 	ps := m.state.Prefixes["/p"]
-	if got := ps.Packages["alpha"].Mark; got != domain.MarkRemove {
+	if got := ps.Packages["alpha"].MarkFor("stub"); got != domain.MarkRemove {
 		t.Fatalf("alpha mark = %v, want MarkRemove preserved", got)
 	}
 	if got := ps.Packages["alpha"].LatestVersion; got != "1.1.0" {
@@ -70,7 +71,7 @@ func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 func TestDiscoverMsgStartsLoad(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // keep lock files out of the real state dir
 	m := New(newStubEco())
-	next, cmd := m.Update(discoverMsg{envs: []ecosystem.Environment{{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}})
+	next, cmd := m.Update(discoverMsg{envsByManager: map[string][]ecosystem.Environment{"stub": {{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}}})
 	if next.(Model).state.ActivePrefixID != "/p" {
 		t.Fatal("active prefix not set")
 	}

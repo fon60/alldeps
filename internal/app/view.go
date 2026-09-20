@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	colFlag = 4
-	colSize = 8
-	colVer  = 12
-	colCand = 12
+	colFlag  = 4
+	colSize  = 8
+	colVer   = 12
+	colCand  = 12
+	colCount = 5 // presence counter: how many further destinations carry the package
 )
 
 func (m Model) View() string {
@@ -29,6 +30,10 @@ func (m Model) View() string {
 	switch m.screen {
 	case ScreenPicker:
 		body = m.pickerBody()
+	case ScreenManager:
+		body = m.managerBody()
+	case ScreenTargets:
+		body = m.targetsBody()
 	case ScreenPlan:
 		body = m.planBody()
 	case ScreenInfo:
@@ -77,6 +82,10 @@ func (m Model) screenHints() string {
 	switch m.screen {
 	case ScreenPicker:
 		return "enter: switch environment   esc/q: back"
+	case ScreenManager:
+		return "enter: select manager   esc/q: back"
+	case ScreenTargets:
+		return "space: toggle   enter: confirm   esc/q: cancel"
 	case ScreenPlan:
 		return "[g] apply   [n/esc] cancel"
 	case ScreenInfo:
@@ -98,7 +107,7 @@ func (m Model) pickerBody() string {
 		bodyH = 1
 	}
 	lines := []string{titleStyle.Render("Environments"), ""}
-	for i, e := range m.envs {
+	for i, e := range m.envs() {
 		marker := "  "
 		if e.ID == m.state.ActivePrefixID {
 			marker = "* "
@@ -111,9 +120,57 @@ func (m Model) pickerBody() string {
 		line := pickerRow(i == m.pickerCursor, marker, e.Meta[ecosystem.MetaSource], e.Rank, count, displayPath(e.ID)+suffix)
 		lines = append(lines, line)
 	}
-	if len(m.envs) == 0 {
+	if len(m.envs()) == 0 {
 		lines = append(lines, "scanning…")
 	}
+	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// managerBody renders the package-manager switcher: exactly one manager is
+// active (marked with *), and selecting another changes only the active
+// manager — installed state and pending marks are preserved.
+func (m Model) managerBody() string {
+	bodyH := m.height - 2
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	ids := m.managerIDs()
+	lines := []string{titleStyle.Render("Package managers"), ""}
+	for i, id := range ids {
+		marker := "  "
+		if id == m.activeManagerID {
+			marker = "* "
+		}
+		n := len(m.envsByManager[id])
+		line := fmt.Sprintf("%s%-12s %d destination(s)", marker, id, n)
+		if i == m.managerCursor {
+			line = cursorStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// targetsBody renders the install-target popup: the eligible destinations of
+// the active manager with multi-select markers (x = selected).
+func (m Model) targetsBody() string {
+	bodyH := m.height - 2
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	lines := []string{titleStyle.Render("Install " + m.installName + " — choose destination(s)"), ""}
+	for i, e := range m.installTargets {
+		marker := "  "
+		if m.installTargetSel[e.ID] {
+			marker = "x "
+		}
+		line := marker + displayPath(e.ID)
+		if i == m.installTargetCursor {
+			line = cursorStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", hintStyle.Render("space: toggle   enter: confirm   esc/q: cancel"))
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
@@ -138,45 +195,50 @@ func pickerRow(cursor bool, marker, source, version string, count int, path stri
 	)
 }
 
-// planBody renders the plan preview: installs with approximate download size,
-// removals with freed space, and upgrades as from→to.
+// planBody renders the plan preview: one section per (destination, manager)
+// group, each listing its installs (name, target version, approximate
+// download size), removals (freed space) and upgrades (from→to). Groups whose
+// destination is marked under two managers are flagged invalid.
 func (m Model) planBody() string {
 	bodyH := m.height - 2
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("Plan — " + displayPath(m.state.ActivePrefixID)), ""}
-	groups := m.buildPlan()
+	lines := []string{titleStyle.Render("Plan"), ""}
+	groups := m.planGroups()
 	if len(groups) == 0 {
 		lines = append(lines, "nothing to do")
 	}
 	for _, g := range groups {
-		lines = append(lines, sectionStyle.Render(fmt.Sprintf("%s (%d)", g.title, len(g.rows))))
-		for _, p := range g.rows {
-			switch g.title {
-			case "Install":
-				v := targetVersion(p)
-				if v == "" {
-					v = "latest"
-				}
-				sz := "…"
-				if b, ok := m.planSizes[p.Name]; ok {
-					sz = humanSize(b)
-				}
-				lines = append(lines, fmt.Sprintf("  %-30s %s", padRight(p.Name+"@"+v, 30), sz))
-			case "Remove":
-				sz := "…"
-				if p.SizeBytes != nil {
-					sz = humanSize(*p.SizeBytes)
-				}
-				lines = append(lines, fmt.Sprintf("  %-30s frees %s", padRight(p.Name, 30), sz))
-			case "Upgrade":
-				to := targetVersion(p)
-				if to == "" {
-					to = "latest"
-				}
-				lines = append(lines, fmt.Sprintf("  %-16s %s → %s", padRight(p.Name, 16), p.InstalledVersion, to))
+		header := fmt.Sprintf("%s @ %s", g.manager, displayPath(g.dest))
+		if g.invalid {
+			header += "  — INVALID: destination is marked under two managers"
+		}
+		lines = append(lines, sectionStyle.Render(header))
+		for _, p := range g.installs {
+			v := targetVersionFor(p, g.manager)
+			if v == "" {
+				v = "latest"
 			}
+			sz := "…"
+			if b, ok := m.planSizes[p.Name]; ok {
+				sz = humanSize(b)
+			}
+			lines = append(lines, fmt.Sprintf("  install %-28s %s", padRight(p.Name+"@"+v, 28), sz))
+		}
+		for _, p := range g.removals {
+			sz := "…"
+			if p.SizeBytes != nil {
+				sz = humanSize(*p.SizeBytes)
+			}
+			lines = append(lines, fmt.Sprintf("  remove  %-28s frees %s", padRight(p.Name, 28), sz))
+		}
+		for _, p := range g.upgrades {
+			to := targetVersionFor(p, g.manager)
+			if to == "" {
+				to = "latest"
+			}
+			lines = append(lines, fmt.Sprintf("  upgrade %-16s %s → %s", padRight(p.Name, 16), p.InstalledVersion, to))
 		}
 		lines = append(lines, "")
 	}
@@ -207,6 +269,34 @@ func (m Model) infoBody() string {
 		lines = append(lines, fmt.Sprintf("Version:  %s (%s)", version, tag))
 	} else {
 		lines = append(lines, "Version:  (none)")
+	}
+
+	if n := len(m.envs()); n > 0 {
+		lines = append(lines, fmt.Sprintf("Destinations (%s) — [j/k] select, [+/-] mark:", m.activeManagerID))
+		for i, e := range m.envs() {
+			ver := "absent"
+			flag := ""
+			if ps := m.state.Prefixes[e.ID]; ps != nil {
+				if p := ps.Packages[m.infoName]; p != nil {
+					if p.Installed() {
+						ver = p.InstalledVersion
+					}
+					f := p.FlagFor(m.activeManagerID)
+					if f[1] != '*' {
+						flag = "  [" + f + "]"
+					}
+				}
+			}
+			marker := "  "
+			if i == m.infoDestCursor {
+				marker = "* "
+			}
+			line := fmt.Sprintf("%s%s %s%s", marker, truncate(displayPath(e.ID), m.width-30), ver, flag)
+			if i == m.infoDestCursor {
+				line = cursorStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
 	}
 
 	if m.infoErr != "" {
@@ -368,8 +458,8 @@ type helpSection struct {
 
 var helpSections = []helpSection{
 	{title: "Marks", rows: [][2]string{
-		{"+", "install / upgrade to latest"},
-		{"-", "remove"},
+		{"+", "install (popup picks destinations) / upgrade to latest"},
+		{"-", "remove from the headline destination"},
 		{"=", "hold (excluded from bulk upgrades)"},
 		{":", "revert mark on the selected row"},
 		{"U", "mark all upgradable packages"},
@@ -382,6 +472,7 @@ var helpSections = []helpSection{
 		{"S", "cycle sort: name, version, size, state"},
 		{"u", "refresh list and rescan environments"},
 		{"e / E", "next environment / environment picker"},
+		{"M", "package manager switcher (one active at a time)"},
 	}},
 	{title: "Search & filter", rows: [][2]string{
 		{"/", "search the registry (esc clears; j loads more at the end)"},
@@ -389,8 +480,16 @@ var helpSections = []helpSection{
 		{"l", "match installed package names"},
 	}},
 	{title: "Info screen", rows: [][2]string{
+		{"j/k", "move the per-destination table cursor"},
+		{"+", "mark install on the destination under the cursor"},
+		{"-", "mark removal from the destination under the cursor"},
 		{"v", "published versions (enter pins one)"},
 		{"C", "README view"},
+	}},
+	{title: "Install targets", rows: [][2]string{
+		{"space", "toggle a destination's selection"},
+		{"enter", "confirm — one install mark per chosen destination"},
+		{"esc/q", "cancel (no marks recorded)"},
 	}},
 	{title: "Plan screen", rows: [][2]string{
 		{"g / enter", "apply the pending changes"},
@@ -481,7 +580,7 @@ func stripEmphasis(s string) string {
 }
 
 func (m Model) listRegion(h int) string {
-	nameW := m.width - colFlag - colSize - colVer - colCand
+	nameW := m.width - colFlag - colSize - colVer - colCand - colCount
 	if nameW < 10 {
 		nameW = 10
 	}
@@ -491,23 +590,30 @@ func (m Model) listRegion(h int) string {
 		padRight("Size", colSize),
 		padRight("Version", colVer),
 		padRight("Candidate", colCand),
+		padRight("Also", colCount),
 	)
 	lines := []string{headerStyle.Render(header)}
-	rows := m.visibleRows()
+	rows := m.displayRows()
 	end := m.listTop + (h - 1)
 	if end >= len(rows) {
 		end = len(rows) - 1
 	}
 	for i := m.listTop; i <= end && len(lines) < h; i++ {
-		r := rows[i]
+		u := rows[i]
+		r := u.Row
 		// Each cell is rendered as a self-contained styled segment: nesting a
 		// pre-styled string inside the cursor style would let its trailing
 		// reset end the reverse video after the first column.
-		flagCell := padRight(r.Flag(), colFlag)
-		nameCell := truncate(r.Name, nameW)
-		sizeCellS := padRight(sizeCell(r), colSize)
+		flagCell := padRight(u.Flag(m.activeManagerID), colFlag)
+		nameCell := truncate(u.Name, nameW)
+		sizeCellS := padRight(sizeCell(u.SizeBytes()), colSize)
 		verCell := padRight(r.InstalledVersion, colVer)
 		candCell := truncate(candidateCell(r), colCand)
+		countCell := ""
+		if u.Count > 0 {
+			countCell = fmt.Sprintf("+%d", u.Count)
+		}
+		countCellS := padRight(countCell, colCount)
 		var row string
 		if i == m.cursor {
 			row = lipgloss.JoinHorizontal(lipgloss.Left,
@@ -516,6 +622,7 @@ func (m Model) listRegion(h int) string {
 				cursorStyle.Render(sizeCellS),
 				cursorStyle.Render(verCell),
 				cursorStyle.Render(candCell),
+				cursorStyle.Render(countCellS),
 			)
 		} else {
 			row = lipgloss.JoinHorizontal(lipgloss.Left,
@@ -524,6 +631,7 @@ func (m Model) listRegion(h int) string {
 				sizeCellS,
 				verCell,
 				candCell,
+				countCellS,
 			)
 		}
 		lines = append(lines, row)
@@ -538,9 +646,19 @@ func (m Model) applyBody() string {
 	if bodyH < 4 {
 		bodyH = 4
 	}
-	title := "Applying changes — " + displayPath(m.state.ActivePrefixID)
+	dests := []string{}
+	for _, ab := range m.applyBatches {
+		if !containsString(dests, ab.dest) {
+			dests = append(dests, ab.dest)
+		}
+	}
+	scope := fmt.Sprintf("%d destination(s)", len(dests))
+	if len(dests) == 1 {
+		scope = displayPath(dests[0])
+	}
+	title := "Applying changes — " + scope
 	if m.applyDone {
-		title = "Apply finished — " + displayPath(m.state.ActivePrefixID)
+		title = "Apply finished — " + scope
 	}
 	logArea := bodyH - 4 // title + blank + log + bottom line
 	lines := []string{titleStyle.Render(title), ""}
@@ -571,11 +689,11 @@ func (m Model) applyBody() string {
 		lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func sizeCell(r *domain.PkgState) string {
-	if r.SizeBytes == nil {
+func sizeCell(b *int64) string {
+	if b == nil {
 		return "…"
 	}
-	return humanSize(*r.SizeBytes)
+	return humanSize(*b)
 }
 
 func candidateCell(r *domain.PkgState) string {
@@ -586,23 +704,28 @@ func candidateCell(r *domain.PkgState) string {
 }
 
 func (m Model) descRegion() string {
-	rows := m.visibleRows()
-	if m.cursor < len(rows) {
-		r := rows[m.cursor]
-		version := r.InstalledVersion
-		if version == "" {
-			version = r.LatestVersion
-		}
-		line1 := lipgloss.JoinHorizontal(lipgloss.Left,
-			nameStyle.Render(r.Name), " ", version, "  ["+r.Flag()+"]")
-		var lines []string
-		lines = append(lines, line1)
-		if r.Description != "" {
-			lines = append(lines, wrapText(r.Description, m.width))
-		}
-		return lipgloss.NewStyle().Width(m.width).Height(3).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	u := m.selectedUnified()
+	if u == nil {
+		return lipgloss.NewStyle().Width(m.width).Height(3).Render("")
 	}
-	return lipgloss.NewStyle().Width(m.width).Height(3).Render("")
+	r := u.Row
+	version := r.InstalledVersion
+	if version == "" {
+		version = r.LatestVersion
+	}
+	extra := ""
+	if u.Headline != nil {
+		extra = "  @" + displayPath(u.HeadlineID)
+	}
+	line1 := lipgloss.NewStyle().MaxWidth(m.width).Render(
+		lipgloss.JoinHorizontal(lipgloss.Left,
+			nameStyle.Render(r.Name), " ", version, "  ["+u.Flag(m.activeManagerID)+"]", extra))
+	var lines []string
+	lines = append(lines, line1)
+	if r.Description != "" {
+		lines = append(lines, wrapText(r.Description, m.width))
+	}
+	return lipgloss.NewStyle().Width(m.width).Height(3).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 // wrapText wraps s to w columns on word boundaries (plain, no styling).
@@ -650,7 +773,7 @@ func (m Model) promptLine() string {
 		return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Render(noticeStyle.Render(fitText(text, m.width)))
 	}
 	if m.quitConfirm {
-		n := m.state.PendingMarkCount(m.state.ActivePrefixID)
+		n := m.state.TotalPending()
 		text := fmt.Sprintf("%d package(s) marked but not applied — really quit? [y] quit  [n] stay", n)
 		return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Render(noticeStyle.Render(fitText(text, m.width)))
 	}
@@ -666,12 +789,16 @@ const keyHints = "+ - = : marks  U upgradable  x clear  enter info  / search  f 
 
 func (m Model) statusLine() string {
 	prefixID := m.state.ActivePrefixID
-	rows := m.visibleRows()
+	rows := m.displayRows()
 	total := 0
-	if ps := m.state.Active(); ps != nil {
-		total = len(ps.Packages)
+	if m.searchActive {
+		if ps := m.state.Active(); ps != nil {
+			total = len(ps.Packages)
+		}
+	} else {
+		total = m.unifiedTotal()
 	}
-	pending := m.state.PendingMarkCount(prefixID)
+	pending := m.pendingOps()
 	filterTxt := "(none)"
 	if m.state.FilterText != "" {
 		filterTxt = m.state.FilterText
@@ -679,17 +806,17 @@ func (m Model) statusLine() string {
 	searchTxt := ""
 	if m.searchActive {
 		if m.searchTotal > 0 {
-			searchTxt = fmt.Sprintf("  search:%q %d/%d", m.searchQuery, m.searchFetched, m.searchTotal)
+			searchTxt = fmt.Sprintf(" search:%q %d/%d", m.searchQuery, m.searchFetched, m.searchTotal)
 		} else {
-			searchTxt = fmt.Sprintf("  search:%q", m.searchQuery)
+			searchTxt = fmt.Sprintf(" search:%q", m.searchQuery)
 		}
 	}
-	sortTxt := "  sort:" + m.state.SortKey.String()
+	sortTxt := " sort:" + m.state.SortKey.String()
 	if m.searchActive {
 		sortTxt = "" // the local sort does not apply to registry results
 	}
-	left := fmt.Sprintf("%d/%d packages, %d pending%s  f:%s%s  %s",
-		len(rows), total, pending, sortTxt, filterTxt, searchTxt, displayPath(prefixID))
+	left := fmt.Sprintf("%d/%d pkgs, %d pending%s f:%s%s mgr:%s %s",
+		len(rows), total, pending, sortTxt, filterTxt, searchTxt, m.activeManagerID, displayPath(prefixID))
 	return lipgloss.NewStyle().Width(m.width).Render(
 		statusStyle.Render(fitText(left, m.width)))
 }
@@ -760,6 +887,15 @@ func repeat(s string, n int) string {
 		out += s
 	}
 	return out
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 var (

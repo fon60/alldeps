@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -28,24 +27,24 @@ func TestSwitchPrefixLoadsTarget(t *testing.T) {
 
 func TestMarksSurviveRoundTrip(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha", "beta")
-	m.state.SetMark("/p/v24", "alpha", domain.MarkRemove)
-	m.state.SetMark("/p/v24", "beta", domain.MarkInstall)
+	m.state.SetMark("/p/v24", "alpha", "stub", domain.MarkRemove)
+	m.state.SetMark("/p/v24", "beta", "stub", domain.MarkInstall)
 
 	m.switchEnv("/p/v22")
-	if m.state.PendingMarkCount("/p/v24") != 2 {
+	if m.state.PendingMarkCount("/p/v24", "stub") != 2 {
 		t.Fatal("marks lost after switching away")
 	}
 
 	m.switchEnv("/p/v24")
 	ps := m.state.Prefixes["/p/v24"]
-	if ps.Packages["alpha"].Mark != domain.MarkRemove || ps.Packages["beta"].Mark != domain.MarkInstall {
+	if ps.Packages["alpha"] .MarkFor("stub") != domain.MarkRemove || ps.Packages["beta"] .MarkFor("stub") != domain.MarkInstall {
 		t.Fatal("marks not intact after round trip")
 	}
 }
 
 func TestCyclePrefix(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha")
-	m.envs = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v22"}}
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v22"}}
 	m.switchEnv("/p/v22")
 	if m.state.ActivePrefixID != "/p/v22" {
 		t.Fatal("first cycle did not move to next prefix")
@@ -61,7 +60,7 @@ func TestVanishedPrefixFallsBackToActive(t *testing.T) {
 	m.state.ActivePrefixID = "/p/v22"
 	m.activeFallback = "/p/v24"
 	// v22 vanished from the fresh scan.
-	m.envs = []ecosystem.Environment{{ID: "/p/v24"}}
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}}
 
 	cmd := m.dropVanishedEnvs()
 	if m.state.ActivePrefixID != "/p/v24" {
@@ -79,7 +78,7 @@ func TestVanishedPrefixFallsBackToFirstWhenActiveGone(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v22", "beta")
 	m.state.ActivePrefixID = "/p/v22"
 	m.activeFallback = "/p/gone-active" // active prefix also vanished
-	m.envs = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v20"}}
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v20"}}
 
 	m.dropVanishedEnvs()
 	if m.state.ActivePrefixID != "/p/v24" {
@@ -89,7 +88,7 @@ func TestVanishedPrefixFallsBackToFirstWhenActiveGone(t *testing.T) {
 
 func TestPickerEnterSwitches(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha")
-	m.envs = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v22"}}
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v22"}}
 	m.screen = ScreenPicker
 	m.pickerCursor = 1
 
@@ -117,13 +116,11 @@ func TestPickerEscReturns(t *testing.T) {
 
 func TestRefreshReloadsAndDropsVanished(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha")
-	m.envs = []ecosystem.Environment{{ID: "/p/v24"}}
+	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}}
 
-	next, _ := m.Update(refreshMsg{
-		envs:     []ecosystem.Environment{}, // everything vanished; active also gone
-		prefixID: "/p/v24",
-		loadErr:  errors.New("no such prefix"),
-	})
+	// A re-scan in which everything (including the active environment)
+	// vanished must surface a notice.
+	next, _ := m.Update(discoverMsg{envsByManager: map[string][]ecosystem.Environment{"stub": {}}})
 	m = next.(Model)
 	if m.notice == "" {
 		t.Fatal("expected a notice after failed refresh")

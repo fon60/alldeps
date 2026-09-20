@@ -36,9 +36,16 @@ func (m Mark) String() string {
 	}
 }
 
+// MarkEntry is one manager's pending mark on a package of a destination.
+type MarkEntry struct {
+	Mark          Mark
+	TargetVersion string // pinned via version screen; "" = latest
+}
+
 // PkgState is one package row in a prefix's list. It holds only
 // manager-agnostic facts; manager-specific values (e.g. why the tree is
-// unhealthy) are supplied by the adapter as metadata.
+// unhealthy) are supplied by the adapter as metadata. Marks are keyed per
+// manager so they survive manager switches and can coexist per destination.
 type PkgState struct {
 	Name             string
 	InstalledVersion string // "" when not installed
@@ -46,8 +53,7 @@ type PkgState struct {
 	SizeBytes        *int64 // background-measured; nil until known
 	Unhealthy        bool   // generic health flag set by the adapter (e.g. broken deps)
 	Origin           Origin
-	Mark             Mark
-	TargetVersion    string // pinned via version screen; "" = latest
+	Marks            map[string]MarkEntry // keyed by manager id; nil = none
 	Description      string
 }
 
@@ -58,6 +64,59 @@ func (p *PkgState) Installed() bool { return p.InstalledVersion != "" }
 // installed package.
 func (p *PkgState) Upgradable() bool {
 	return p.Installed() && p.LatestVersion != "" && p.LatestVersion != p.InstalledVersion
+}
+
+// MarkFor returns the pending mark manager has on this row (MarkNone if none).
+func (p *PkgState) MarkFor(manager string) Mark {
+	if p.Marks == nil {
+		return MarkNone
+	}
+	return p.Marks[manager].Mark
+}
+
+// TargetVersionFor returns manager's pinned target version ("").
+func (p *PkgState) TargetVersionFor(manager string) string {
+	if p.Marks == nil {
+		return ""
+	}
+	return p.Marks[manager].TargetVersion
+}
+
+// HasMarks reports whether any manager has a pending mark on this row.
+func (p *PkgState) HasMarks() bool { return len(p.Marks) > 0 }
+
+// SetMarkFor sets manager's mark with toggle semantics: setting the same mark
+// that is already pending clears it back to none.
+func (p *PkgState) SetMarkFor(manager string, mk Mark) {
+	if p.Marks == nil {
+		p.Marks = map[string]MarkEntry{}
+	}
+	cur := p.Marks[manager]
+	if cur.Mark == mk {
+		delete(p.Marks, manager)
+		return
+	}
+	entry := MarkEntry{Mark: mk}
+	if mk == MarkInstall && cur.TargetVersion != "" {
+		entry.TargetVersion = cur.TargetVersion
+	}
+	p.Marks[manager] = entry
+}
+
+// SetMarkEntry force-sets manager's mark (no toggle), replacing any previous
+// entry of that manager.
+func (p *PkgState) SetMarkEntry(manager string, entry MarkEntry) {
+	if p.Marks == nil {
+		p.Marks = map[string]MarkEntry{}
+	}
+	p.Marks[manager] = entry
+}
+
+// RevertFor clears manager's pending mark.
+func (p *PkgState) RevertFor(manager string) {
+	if p.Marks != nil {
+		delete(p.Marks, manager)
+	}
 }
 
 // StateChar is the current-state flag character: b unhealthy, i installed,
@@ -73,9 +132,13 @@ func (p *PkgState) StateChar() rune {
 	}
 }
 
-// ActionChar is the pending-action flag character.
-func (p *PkgState) ActionChar() rune {
-	switch p.Mark {
+// ActionCharFor is manager's pending-action flag character.
+func (p *PkgState) ActionCharFor(manager string) rune {
+	return actionChar(p.MarkFor(manager))
+}
+
+func actionChar(mk Mark) rune {
+	switch mk {
 	case MarkInstall:
 		return '+'
 	case MarkRemove:
@@ -89,9 +152,9 @@ func (p *PkgState) ActionChar() rune {
 	}
 }
 
-// Flag is the two-character state/action flag (e.g. "i-", "p+").
-func (p *PkgState) Flag() string {
-	return string(p.StateChar()) + string(p.ActionChar())
+// FlagFor is the two-character state/action flag for one manager (e.g. "i-").
+func (p *PkgState) FlagFor(manager string) string {
+	return string(p.StateChar()) + string(p.ActionCharFor(manager))
 }
 
 // PrefixState is all list state for one environment (one destination). The
@@ -161,80 +224,78 @@ func (s *AppState) Active() *PrefixState {
 	return s.Prefixes[s.ActivePrefixID]
 }
 
-// SetMark sets a mark on a package of a prefix with toggle semantics:
+// SetMark sets manager's mark on a package of a prefix with toggle semantics:
 // setting the same mark that is already pending clears it back to none.
-func (s *AppState) SetMark(prefixID, name string, mk Mark) {
-	ps := s.Prefixes[prefixID]
-	if ps == nil {
-		return
-	}
-	p := ps.Packages[name]
-	if p == nil {
-		return
-	}
-	if p.Mark == mk {
-		p.Mark = MarkNone
-		p.TargetVersion = ""
-		return
-	}
-	p.Mark = mk
-	if mk != MarkInstall {
-		p.TargetVersion = ""
-	}
-}
-
-// Revert clears the mark on a package back to no-action.
-func (s *AppState) Revert(prefixID, name string) {
+func (s *AppState) SetMark(prefixID, name, manager string, mk Mark) {
 	ps := s.Prefixes[prefixID]
 	if ps == nil {
 		return
 	}
 	if p := ps.Packages[name]; p != nil {
-		p.Mark = MarkNone
-		p.TargetVersion = ""
+		p.SetMarkFor(manager, mk)
 	}
 }
 
-// ClearAllMarks clears every pending mark in a prefix.
-func (s *AppState) ClearAllMarks(prefixID string) {
+// Revert clears manager's mark on a package back to no-action.
+func (s *AppState) Revert(prefixID, name, manager string) {
+	ps := s.Prefixes[prefixID]
+	if ps == nil {
+		return
+	}
+	if p := ps.Packages[name]; p != nil {
+		p.RevertFor(manager)
+	}
+}
+
+// ClearAllMarks clears every pending mark of one manager in a prefix.
+func (s *AppState) ClearAllMarks(prefixID, manager string) {
 	ps := s.Prefixes[prefixID]
 	if ps == nil {
 		return
 	}
 	for _, p := range ps.Packages {
-		p.Mark = MarkNone
-		p.TargetVersion = ""
+		p.RevertFor(manager)
 	}
 }
 
-// MarkAllUpgradable marks every upgradable, non-held installed package for
-// upgrade. Held packages are left untouched.
-func (s *AppState) MarkAllUpgradable(prefixID string) int {
+// MarkAllUpgradable marks every upgradable, non-held installed package of a
+// prefix for upgrade under manager. Held packages are left untouched.
+func (s *AppState) MarkAllUpgradable(prefixID, manager string) int {
 	ps := s.Prefixes[prefixID]
 	if ps == nil {
 		return 0
 	}
 	n := 0
 	for _, p := range ps.Packages {
-		if p.Installed() && p.Upgradable() && p.Mark != MarkHold {
-			p.Mark = MarkUpgrade
-			p.TargetVersion = ""
+		if p.Installed() && p.Upgradable() && p.MarkFor(manager) != MarkHold {
+			p.SetMarkEntry(manager, MarkEntry{Mark: MarkUpgrade})
 			n++
 		}
 	}
 	return n
 }
 
-// PendingMarkCount counts rows with a pending mark in a prefix.
-func (s *AppState) PendingMarkCount(prefixID string) int {
+// PendingMarkCount counts rows with a pending mark of one manager in a prefix.
+func (s *AppState) PendingMarkCount(prefixID, manager string) int {
 	ps := s.Prefixes[prefixID]
 	if ps == nil {
 		return 0
 	}
 	n := 0
 	for _, p := range ps.Packages {
-		if p.Mark != MarkNone {
+		if p.MarkFor(manager) != MarkNone {
 			n++
+		}
+	}
+	return n
+}
+
+// TotalPending counts every pending mark across all prefixes and managers.
+func (s *AppState) TotalPending() int {
+	n := 0
+	for _, ps := range s.Prefixes {
+		for _, p := range ps.Packages {
+			n += len(p.Marks)
 		}
 	}
 	return n

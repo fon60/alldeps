@@ -27,7 +27,7 @@ func TestStartupRefusesLockedDefault(t *testing.T) {
 	m := New(newStubEco())
 	foreignHolder(t, dir, "/p")
 
-	nextRaw, cmd := m.Update(discoverMsg{envs: []ecosystem.Environment{{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}})
+	nextRaw, cmd := m.Update(discoverMsg{envsByManager: map[string][]ecosystem.Environment{"stub": {{ID: "/p", Meta: ecosystem.Meta{ecosystem.MetaActive: "1"}}}}})
 	next := nextRaw.(Model)
 	if cmd != nil {
 		t.Fatal("no load command should start for a locked default environment")

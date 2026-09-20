@@ -31,7 +31,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 		t.Fatalf("package count = %d, want 2 (no duplicate for alpha)", len(ps.Packages))
 	}
 	fresh := ps.Packages["brand-new"]
-	if fresh == nil || fresh.Origin != domain.OriginSearch || fresh.Flag() != "p*" {
+	if fresh == nil || fresh.Origin != domain.OriginSearch || fresh.FlagFor("stub") != "p*" {
 		t.Fatalf("new search row wrong: %+v", fresh)
 	}
 	if fresh.LatestVersion != "3.0.0" || fresh.Description != "fresh" {
@@ -86,7 +86,7 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 		{Name: "delta", Version: "2.0.0"},
 	}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
-	m.state.SetMark("/p", "delta", domain.MarkInstall)
+	m.state.SetMark("/p", "delta", "stub", domain.MarkInstall)
 
 	m.clearSearch()
 
@@ -97,7 +97,7 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 	if _, ok := ps.Packages["gamma"]; ok {
 		t.Fatal("unmarked search row must be dropped on clear")
 	}
-	if d := ps.Packages["delta"]; d == nil || d.Mark != domain.MarkInstall {
+	if d := ps.Packages["delta"]; d == nil || d .MarkFor("stub") != domain.MarkInstall {
 		t.Fatalf("marked search row must survive the clear: %+v", d)
 	}
 	rows := m.visibleRows()
@@ -147,7 +147,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p")
 	ps := m.state.Prefixes["/p"]
 	ps.Packages["foo-old"] = &domain.PkgState{Name: "foo-old", Origin: domain.OriginSearch, LatestVersion: "1.0.0"}
-	marked := &domain.PkgState{Name: "foo-marked", Origin: domain.OriginSearch, LatestVersion: "2.0.0", Mark: domain.MarkInstall}
+	marked := &domain.PkgState{Name: "foo-marked", Origin: domain.OriginSearch, LatestVersion: "2.0.0", Marks: map[string]domain.MarkEntry{"stub": {Mark: domain.MarkInstall}}}
 	ps.Packages["foo-marked"] = marked
 
 	hits := []ecosystem.Hit{{Name: "bar-new", Version: "9.0.0"}}
@@ -156,7 +156,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 	if _, ok := ps.Packages["foo-old"]; ok {
 		t.Fatal("unmarked search row should be replaced by the new search")
 	}
-	if got := ps.Packages["foo-marked"]; got == nil || got.Mark != domain.MarkInstall {
+	if got := ps.Packages["foo-marked"]; got == nil || got .MarkFor("stub") != domain.MarkInstall {
 		t.Fatalf("marked search row must survive: %+v", got)
 	}
 	if _, ok := ps.Packages["bar-new"]; !ok {
@@ -166,7 +166,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 
 func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.state.SetMark("/p", "alpha", domain.MarkRemove)
+	m.state.SetMark("/p", "alpha", "stub", domain.MarkRemove)
 	m.state.FilterText = "~i"
 	before := len(m.state.Prefixes["/p"].Packages)
 
@@ -176,7 +176,7 @@ func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	if len(m.state.Prefixes["/p"].Packages) != before {
 		t.Fatal("rows changed after failed search")
 	}
-	if m.state.Prefixes["/p"].Packages["alpha"].Mark != domain.MarkRemove {
+	if m.state.Prefixes["/p"].Packages["alpha"] .MarkFor("stub") != domain.MarkRemove {
 		t.Fatal("mark lost after failed search")
 	}
 	if m.state.FilterText != "~i" {

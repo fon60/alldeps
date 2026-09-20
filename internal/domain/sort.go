@@ -142,7 +142,7 @@ func SortRows(rows []*PkgState, key SortKey) {
 				}
 			}
 		case SortState:
-			if fa, fb := a.Flag(), b.Flag(); fa != fb {
+			if fa, fb := a.StateChar(), b.StateChar(); fa != fb {
 				return fa < fb
 			}
 		}

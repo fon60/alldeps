@@ -11,21 +11,33 @@ import (
 // against the port alone, with no npm adapter or node-ecosystem package in
 // sight.
 type stubEco struct {
-	envs      []ecosystem.Environment
-	packages  map[string][]ecosystem.Package
-	searchFn  func(query string, size, from int) ([]ecosystem.Hit, int, error)
-	docs      map[string]*ecosystem.Doc
-	readmes   map[string]string
-	writable  bool
-	latest    map[string]string
-	latestErr error
-	sizes     map[string]int64
-	execOut   string
-	execErr   error
-	executed  []ecosystem.Batch
+	id          string
+	envs        []ecosystem.Environment
+	packages    map[string][]ecosystem.Package
+	searchFn    func(query string, size, from int) ([]ecosystem.Hit, int, error)
+	docs        map[string]*ecosystem.Doc
+	readmes     map[string]string
+	writable    bool
+	latest      map[string]string
+	latestErr   error
+	sizes       map[string]int64
+	execOut     string
+	execErr     error
+	execFn      func(batch ecosystem.Batch) (string, error) // per-batch override for failure tests
+	executed    []ecosystem.Batch
+	listCalls   int
+	lockCalls   []string // env IDs passed to Lock, in order
+	released    []string // env IDs released through a returned handle
 }
 
 func newStubEco() *stubEco { return &stubEco{writable: true} }
+
+// withID returns a copy of the stub reporting manager id.
+func (s *stubEco) withID(id string) *stubEco {
+	c := *s
+	c.id = id
+	return &c
+}
 
 var stubOpNames = map[ecosystem.OpKind]string{
 	ecosystem.OpInstall: "install",
@@ -33,13 +45,19 @@ var stubOpNames = map[ecosystem.OpKind]string{
 	ecosystem.OpRemove:  "remove",
 }
 
-func (s *stubEco) ID() string { return "stub" }
+func (s *stubEco) ID() string {
+	if s.id == "" {
+		return "stub"
+	}
+	return s.id
+}
 
 func (s *stubEco) Discover(ctx context.Context) ([]ecosystem.Environment, error) {
 	return s.envs, nil
 }
 
 func (s *stubEco) ListInstalled(ctx context.Context, env ecosystem.Environment) ([]ecosystem.Package, error) {
+	s.listCalls++
 	return s.packages[env.ID], nil
 }
 
@@ -80,15 +98,22 @@ func (s *stubEco) Resolve(intent ecosystem.Intent) (ecosystem.Plan, []ecosystem.
 
 func (s *stubEco) Execute(ctx context.Context, env ecosystem.Environment, batch ecosystem.Batch) (string, error) {
 	s.executed = append(s.executed, batch)
+	if s.execFn != nil {
+		return s.execFn(batch)
+	}
 	return s.execOut, s.execErr
 }
 
-type stubLock struct{}
+type stubLock struct {
+	owner  *stubEco
+	envID  string
+}
 
-func (stubLock) Release() {}
+func (l stubLock) Release() { l.owner.released = append(l.owner.released, l.envID) }
 
 func (s *stubEco) Lock(env ecosystem.Environment) (ecosystem.LockHandle, error) {
-	return stubLock{}, nil
+	s.lockCalls = append(s.lockCalls, env.ID)
+	return stubLock{owner: s, envID: env.ID}, nil
 }
 
 func (s *stubEco) DetectProject(root string) (bool, ecosystem.Meta) { return false, nil }

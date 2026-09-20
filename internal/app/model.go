@@ -27,6 +27,8 @@ type Screen int
 const (
 	ScreenList Screen = iota
 	ScreenPicker
+	ScreenManager
+	ScreenTargets
 	ScreenPlan
 	ScreenInfo
 	ScreenVersions
@@ -57,22 +59,22 @@ func newPrompt(kind PromptKind) *promptState {
 }
 
 type Model struct {
-	state          *domain.AppState
-	eco            ecosystem.Ecosystem
-	screen         Screen
-	helpFrom       Screen // screen to return to when the help screen closes
-	width          int
-	height         int
-	hostname       string
-	cursor         int
-	listTop        int // first visible row index of the list viewport
-	notice         string
-	filterPred     filter.Predicate
-	prompt         *promptState
-	envs           []ecosystem.Environment
-	pickerCursor   int
-	pickerLocked   map[string]bool // env IDs held by another live instance
-	activeFallback string          // last resolved active environment (for vanished-prefix fallback)
+	state           *domain.AppState
+	managers        map[string]ecosystem.Ecosystem
+	activeManagerID string
+	screen          Screen
+	helpFrom        Screen // screen to return to when the help screen closes
+	width           int
+	height          int
+	hostname        string
+	cursor          int
+	listTop         int // first visible row index of the list viewport
+	notice          string
+	filterPred      filter.Predicate
+	prompt          *promptState
+	pickerCursor    int
+	pickerLocked    map[string]bool // env IDs held by another live instance
+	activeFallback  string          // last resolved active environment (for vanished-prefix fallback)
 
 	// searchActive is true while a registry search result set is on display;
 	// the list then shows only those results (plus installed rows that match).
@@ -88,36 +90,72 @@ type Model struct {
 
 	locks *lock.Manager
 
-	planSizes    map[string]int64      // name -> unpacked size shown in the plan screen
-	applyBatches []ecosystem.Batch     // queued batches for the running apply
+	envsByManager map[string][]ecosystem.Environment // discovered destinations per manager
+	managerCursor int                                // cursor on the manager switcher screen
+
+	planSizes     map[string]int64 // name -> unpacked size shown in the plan screen
+	applyBatches  []applyBatch     // queued (destination, manager) batches for the running apply
 	applyBatchIdx int
-	applyFrom     map[string]string // name -> installed version at apply start
+	applyDests    []string          // every destination the running apply touches, in order
+	applyLocks    []string          // destinations locked at apply start, released after it
+	applyFrom     map[string]string // dest+\x00+name -> installed version at apply start
 	applyFailed   int
 	applyDone     bool               // completion prompt is showing
 	applyLog      []string           // raw manager output lines shown on the apply screen
 	applyCurrent  string             // command currently running (bottom line while applying)
 	applyCancel   context.CancelFunc // aborts the batch currently running
+	applyAborted  bool               // user pressed ctrl+c: the whole plan remainder is dropped
 
-	infoName     string // package the info screen shows
-	infoDoc      *ecosystem.Doc
-	infoLocal    bool   // doc came from the local package.json (offline)
-	infoErr      string // set when metadata could not be fetched/read
-	verCursor    int
-	readmeLines  []string
-	readmeScroll int
+	installName         string                  // package the install-target popup marks
+	installTargets      []ecosystem.Environment // eligible destinations in the popup
+	installTargetCursor int
+	installTargetSel    map[string]bool // destination IDs preselected/selected in the popup
+
+	infoName       string // package the info screen shows
+	infoDoc        *ecosystem.Doc
+	infoLocal      bool   // doc came from the local package.json (offline)
+	infoErr        string // set when metadata could not be fetched/read
+	infoDestCursor int    // cursor on the info screen's per-destination table
+	verCursor      int
+	readmeLines    []string
+	readmeScroll   int
 
 	helpScroll int // scroll position on the help screen
 
 	quitConfirm bool // quit confirmation prompt is showing
 }
 
-// New builds the app model around the injected ecosystem adapter.
+// New builds the app model around the injected ecosystem adapter. The
+// adapter's own id becomes the single active manager.
 func New(eco ecosystem.Ecosystem) Model {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown"
 	}
-	return Model{state: domain.NewAppState(), eco: eco, locks: lock.NewDefault(), hostname: host}
+	return Model{
+		state:           domain.NewAppState(),
+		managers:        map[string]ecosystem.Ecosystem{eco.ID(): eco},
+		activeManagerID: eco.ID(),
+		envsByManager:   map[string][]ecosystem.Environment{},
+		locks:           lock.NewDefault(),
+		hostname:        host,
+	}
+}
+
+// eco returns the adapter of the active manager.
+func (m Model) eco() ecosystem.Ecosystem { return m.managers[m.activeManagerID] }
+
+// envs returns the discovered destinations of the active manager.
+func (m Model) envs() []ecosystem.Environment { return m.envsByManager[m.activeManagerID] }
+
+// managerIDs returns all known manager ids in stable order.
+func (m Model) managerIDs() []string {
+	ids := make([]string, 0, len(m.managers))
+	for id := range m.managers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // resetSearch clears the transient search-result view (marks are untouched;
@@ -164,7 +202,7 @@ func (m Model) lockedEnvs() map[string]bool {
 	if m.locks == nil {
 		return out
 	}
-	for _, e := range m.envs {
+	for _, e := range m.envs() {
 		if m.locks.IsHeld(e.ID) {
 			out[e.ID] = true
 		}
@@ -179,49 +217,51 @@ func (m *Model) releaseAll() {
 }
 
 type discoverMsg struct {
-	envs []ecosystem.Environment
-	err  error
+	envsByManager map[string][]ecosystem.Environment
+	errs          map[string]error // manager id -> discovery failure
 }
 
-// discoverCmd asks the ecosystem for its destinations in the background.
-func (m Model) discoverCmd() tea.Cmd {
-	eco := m.eco
+// discoverAllCmd asks every known manager for its destinations in the
+// background. A failing manager is reported but never blocks first paint.
+func (m Model) discoverAllCmd() tea.Cmd {
+	ids := m.managerIDs()
+	managers := m.managers
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		envs, err := eco.Discover(ctx)
-		return discoverMsg{envs: envs, err: err}
-	}
-}
-
-// refreshCmd re-discovers environments and reloads the active one from disk.
-func (m Model) refreshCmd() tea.Cmd {
-	active := m.state.ActivePrefixID
-	eco := m.eco
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		envs, scanErr := eco.Discover(ctx)
-		var loadErr error
-		var pkgs map[string]*domain.PkgState
-		if active != "" {
-			list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: active})
+		envsByManager := map[string][]ecosystem.Environment{}
+		errs := map[string]error{}
+		for _, id := range ids {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			envs, err := managers[id].Discover(ctx)
+			cancel()
 			if err != nil {
-				loadErr = err
-			} else {
-				pkgs = toPkgStates(list)
+				errs[id] = err
+				continue
 			}
+			envsByManager[id] = envs
 		}
-		return refreshMsg{envs: envs, scanErr: scanErr, prefixID: active, pkgs: pkgs, loadErr: loadErr}
+		return discoverMsg{envsByManager: envsByManager, errs: errs}
 	}
 }
 
-type refreshMsg struct {
-	envs     []ecosystem.Environment
-	scanErr  error
-	prefixID string
-	pkgs     map[string]*domain.PkgState
-	loadErr  error
+// refreshCmd re-discovers all managers' environments; the reload of every
+// destination happens in a follow-up loadAllEnvsCmd.
+func (m Model) refreshCmd() tea.Cmd {
+	return m.discoverAllCmd()
+}
+
+// loadAllEnvsCmd starts background loads for every not-yet-loaded destination
+// of the active manager, so the unified list fills in progressively.
+func (m Model) loadAllEnvsCmd() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, e := range m.envs() {
+		if ps := m.state.Prefixes[e.ID]; ps == nil || !ps.Loaded {
+			cmds = append(cmds, m.loadEnvCmd(e.ID))
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // Messages from async work.
@@ -252,7 +292,7 @@ type searchMsg struct {
 // searchCmd queries one page of the environment's package index, starting at
 // offset from.
 func (m Model) searchCmd(prefixID, query string, from int) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -283,7 +323,7 @@ func (m *Model) applySearchResults(prefixID string, query string, from int, hits
 	}
 	if from == 0 {
 		for name, p := range ps.Packages {
-			if p.Origin == domain.OriginSearch && p.Mark == domain.MarkNone {
+			if p.Origin == domain.OriginSearch && !p.HasMarks() {
 				delete(ps.Packages, name)
 			}
 		}
@@ -327,7 +367,7 @@ func (m *Model) applySearchResults(prefixID string, query string, from int, hits
 func (m *Model) clearSearch() {
 	if ps := m.state.Active(); ps != nil {
 		for name, p := range ps.Packages {
-			if p.Origin == domain.OriginSearch && p.Mark == domain.MarkNone {
+			if p.Origin == domain.OriginSearch && !p.HasMarks() {
 				delete(ps.Packages, name)
 			}
 		}
@@ -339,7 +379,7 @@ func (m *Model) clearSearch() {
 // checkOutdatedCmd fetches latest versions in the background (never blocks
 // first paint).
 func (m Model) checkOutdatedCmd(prefixID string, names []string) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -349,7 +389,7 @@ func (m Model) checkOutdatedCmd(prefixID string, names []string) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.discoverCmd()
+	return m.discoverAllCmd()
 }
 
 // switchEnv makes id the active environment and loads it if not already
@@ -389,18 +429,21 @@ func (m *Model) switchEnv(id string) tea.Cmd {
 // environment with a notice (spec: Vanished prefix handling). It returns a
 // load command for the fallback when one must be loaded.
 func (m *Model) dropVanishedEnvs() tea.Cmd {
-	if len(m.envs) == 0 {
+	if len(m.envs()) == 0 {
+		if m.state.ActivePrefixID != "" {
+			m.notice = "no environments detected for manager " + m.activeManagerID
+		}
 		return nil
 	}
 	live := map[string]bool{}
-	for _, e := range m.envs {
+	for _, e := range m.envs() {
 		live[e.ID] = true
 	}
 	active := m.state.ActivePrefixID
 	if active != "" && !live[active] {
 		fallback := m.activeFallback
 		if fallback == "" || !live[fallback] {
-			fallback = m.envs[0].ID
+			fallback = m.envs()[0].ID
 		}
 		cmd := m.switchEnv(fallback)
 		if m.state.ActivePrefixID == fallback {
@@ -413,17 +456,17 @@ func (m *Model) dropVanishedEnvs() tea.Cmd {
 
 // cycleEnv switches to the next detected environment in version order.
 func (m *Model) cycleEnv() tea.Cmd {
-	if len(m.envs) == 0 {
+	if len(m.envs()) == 0 {
 		return nil
 	}
 	idx := -1
-	for i, e := range m.envs {
+	for i, e := range m.envs() {
 		if e.ID == m.state.ActivePrefixID {
 			idx = i
 			break
 		}
 	}
-	next := m.envs[(idx+1)%len(m.envs)]
+	next := m.envs()[(idx+1)%len(m.envs())]
 	return m.switchEnv(next.ID)
 }
 
@@ -436,7 +479,7 @@ type planSizeMsg struct {
 // planSizeCmd fetches the approximate unpacked size of one install target for
 // the plan screen. Failures leave the row showing "…".
 func (m Model) planSizeCmd(prefixID, name, version string) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -455,7 +498,7 @@ type infoDataMsg struct {
 // infoCmd loads package metadata for the info screen: the local document for
 // installed packages (offline-capable), otherwise the registry document.
 func (m Model) infoCmd(prefixID, name string, installed bool) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -472,7 +515,7 @@ type versionsMsg struct {
 
 // versionsCmd fetches the full package document for the version history view.
 func (m Model) versionsCmd(prefixID, name string) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -494,7 +537,7 @@ type readmeMsg struct {
 
 // readmeFetchCmd fetches the package document on demand for its readme field.
 func (m Model) readmeFetchCmd(prefixID, name string) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -514,58 +557,112 @@ type applyBatchMsg struct {
 }
 
 type applyReloadMsg struct {
-	prefixID string
-	pkgs     map[string]*domain.PkgState
-	err      error
+	pkgsByDest map[string]map[string]*domain.PkgState // destination -> fresh installed state
+	errs       map[string]error                       // destination -> re-read failure
 }
 
-// targetVersion is the version an install/upgrade mark will apply: a pinned
+// targetVersionFor is the version a mark will apply under manager: a pinned
 // version if set, else the known latest.
-func targetVersion(p *domain.PkgState) string {
-	if p.TargetVersion != "" {
-		return p.TargetVersion
+func targetVersionFor(p *domain.PkgState, manager string) string {
+	if v := p.TargetVersionFor(manager); v != "" {
+		return v
 	}
 	return p.LatestVersion
 }
 
-// planRows splits the active prefix's marked packages by operation kind.
-func (m Model) planRows() (installs, removals, upgrades []*domain.PkgState) {
-	ps := m.state.Active()
-	if ps == nil {
-		return
-	}
-	for _, p := range ps.Rows() {
-		switch p.Mark {
-		case domain.MarkInstall:
-			installs = append(installs, p)
-		case domain.MarkRemove:
-			removals = append(removals, p)
-		case domain.MarkUpgrade:
-			upgrades = append(upgrades, p)
+// hasInstallMark reports whether any manager has an install mark pending.
+func hasInstallMark(p *domain.PkgState) bool {
+	for _, e := range p.Marks {
+		if e.Mark == domain.MarkInstall {
+			return true
 		}
 	}
-	return
+	return false
+}
+
+// liveDests returns every destination known to any manager, sorted.
+func (m Model) liveDests() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, ids := range m.managerIDs() {
+		for _, e := range m.envsByManager[ids] {
+			if !seen[e.ID] {
+				seen[e.ID] = true
+				out = append(out, e.ID)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 type planGroup struct {
-	title string
-	rows  []*domain.PkgState
+	dest     string
+	manager  string
+	installs []*domain.PkgState
+	removals []*domain.PkgState
+	upgrades []*domain.PkgState
+	invalid  bool // destination marked under two managers: skipped, not executed
 }
 
-// buildPlan groups pending marks for the plan preview screen.
-func (m Model) buildPlan() []planGroup {
-	installs, removals, upgrades := m.planRows()
+// planGroups derives the ordered (destination, manager) groups of all pending
+// marks across every live destination and manager. A group whose destination
+// carries marks of two different managers is flagged invalid (spec:
+// one-manager-per-destination guard).
+func (m Model) planGroups() []planGroup {
+	var ops []domain.Op
+	for _, dest := range m.liveDests() {
+		ps := m.state.Prefixes[dest]
+		if ps == nil {
+			continue
+		}
+		for _, p := range ps.Rows() {
+			for mgr, entry := range p.Marks {
+				if entry.Mark == domain.MarkHold || entry.Mark == domain.MarkNone {
+					continue
+				}
+				ops = append(ops, domain.Op{Destination: dest, Manager: mgr, Name: p.Name, Mark: entry.Mark, Version: entry.TargetVersion})
+			}
+		}
+	}
+	plan := &domain.Plan{Ops: ops}
+	invalid := map[string]bool{}
+	for _, d := range plan.InvalidDestinations() {
+		invalid[d] = true
+	}
 	var groups []planGroup
-	if len(installs) > 0 {
-		groups = append(groups, planGroup{"Install", installs})
-	}
-	if len(removals) > 0 {
-		groups = append(groups, planGroup{"Remove", removals})
-	}
-	if len(upgrades) > 0 {
-		groups = append(groups, planGroup{"Upgrade", upgrades})
+	for _, g := range plan.Groups() {
+		ps := m.state.Prefixes[g.Destination]
+		pg := planGroup{dest: g.Destination, manager: g.Manager, invalid: invalid[g.Destination]}
+		for _, op := range g.Ops {
+			if ps == nil {
+				continue
+			}
+			p := ps.Packages[op.Name]
+			if p == nil {
+				continue
+			}
+			switch op.Mark {
+			case domain.MarkInstall:
+				pg.installs = append(pg.installs, p)
+			case domain.MarkRemove:
+				pg.removals = append(pg.removals, p)
+			case domain.MarkUpgrade:
+				pg.upgrades = append(pg.upgrades, p)
+			}
+		}
+		groups = append(groups, pg)
 	}
 	return groups
+}
+
+// pendingOps counts every executable pending mark (holds excluded).
+func (m Model) pendingOps() int {
+	n := 0
+	for _, g := range m.planGroups() {
+		n += len(g.installs) + len(g.removals) + len(g.upgrades)
+	}
+	return n
 }
 
 // openPlan shows the plan preview and starts fetching install sizes.
@@ -573,11 +670,9 @@ func (m Model) openPlan() (Model, tea.Cmd) {
 	m.screen = ScreenPlan
 	m.planSizes = map[string]int64{}
 	var cmds []tea.Cmd
-	if ps := m.state.Active(); ps != nil {
-		for _, p := range ps.Packages {
-			if p.Mark == domain.MarkInstall {
-				cmds = append(cmds, m.planSizeCmd(ps.ID, p.Name, targetVersion(p)))
-			}
+	for _, g := range m.planGroups() {
+		for _, p := range g.installs {
+			cmds = append(cmds, m.planSizeCmd(g.dest, p.Name, targetVersionFor(p, g.manager)))
 		}
 	}
 	if len(cmds) == 0 {
@@ -588,17 +683,29 @@ func (m Model) openPlan() (Model, tea.Cmd) {
 
 // openInfo shows the info screen for the selected row and starts loading its
 // metadata (local package.json when installed, registry document otherwise).
+// The per-destination table cursor starts on the headline destination.
 func (m Model) openInfo() (Model, tea.Cmd) {
-	r := m.selectedRow()
-	if r == nil {
+	u := m.selectedUnified()
+	if u == nil {
 		return m, nil
 	}
 	m.screen = ScreenInfo
-	m.infoName = r.Name
+	m.infoName = u.Name
 	m.infoDoc = nil
 	m.infoLocal = false
 	m.infoErr = ""
-	return m, m.infoCmd(m.state.ActivePrefixID, r.Name, r.Installed())
+	envID := m.state.ActivePrefixID
+	if u.HeadlineID != "" {
+		envID = u.HeadlineID
+	}
+	m.infoDestCursor = 0
+	for i, e := range m.envs() {
+		if e.ID == envID {
+			m.infoDestCursor = i
+			break
+		}
+	}
+	return m, m.infoCmd(envID, u.Name, u.Installed())
 }
 
 // openVersions shows the version history; when the current doc carries no
@@ -655,13 +762,12 @@ func (m *Model) pinVersion() {
 		return
 	}
 	if p.Installed() {
-		p.Mark = domain.MarkUpgrade
+		p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkUpgrade, TargetVersion: v})
 		m.notice = fmt.Sprintf("%s marked for upgrade to %s", p.Name, v)
 	} else {
-		p.Mark = domain.MarkInstall
+		p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkInstall, TargetVersion: v})
 		m.notice = fmt.Sprintf("%s marked for install at %s", p.Name, v)
 	}
-	p.TargetVersion = v
 	m.screen = ScreenInfo
 }
 
@@ -673,7 +779,7 @@ func (m Model) openReadme() (Model, tea.Cmd) {
 	found := false
 	if ps := m.state.Active(); ps != nil {
 		if p := ps.Packages[m.infoName]; p != nil && p.Installed() {
-			text, found = m.eco.Readme(ecosystem.Environment{ID: m.state.ActivePrefixID}, m.infoName)
+			text, found = m.eco().Readme(ecosystem.Environment{ID: m.state.ActivePrefixID}, m.infoName)
 		}
 	}
 	if !found && m.infoDoc != nil && m.infoDoc.Readme != "" {
@@ -698,57 +804,111 @@ func (m *Model) setReadme(text string) {
 	m.screen = ScreenReadme
 }
 
-// buildIntent collects the active environment's pending marks into a
-// manager-agnostic intent for the ecosystem resolver.
-func (m Model) buildIntent() ecosystem.Intent {
-	installs, removals, upgrades := m.planRows()
-	items := make([]ecosystem.MarkedItem, 0, len(installs)+len(upgrades)+len(removals))
-	for _, p := range installs {
-		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpInstall, Name: p.Name, Version: targetVersion(p)})
-	}
-	for _, p := range upgrades {
-		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpUpgrade, Name: p.Name, Version: targetVersion(p)})
-	}
-	for _, p := range removals {
-		items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpRemove, Name: p.Name})
-	}
-	return ecosystem.Intent{Env: ecosystem.Environment{ID: m.state.ActivePrefixID}, Items: items}
+// applyBatch is one queued invocation bound to its destination and the
+// manager that executes it.
+type applyBatch struct {
+	dest    string
+	manager string
+	batch   ecosystem.Batch
 }
 
-// startApply begins the single-flight apply run: it snapshots versions for
-// post-apply reconciliation and launches the first batch.
+func (ab applyBatch) cmdLine() string { return ab.batch.Label + " @ " + displayPath(ab.dest) }
+
+// startApply begins the single-flight apply run over every valid
+// (destination, manager) group: each group is resolved through its own
+// manager, locks are taken for all touched destinations before any batch
+// runs, versions are snapshotted for post-apply reconciliation, and the
+// first batch launches. Invalid groups (one-manager-per-destination
+// violations) are skipped and reported in the apply log.
 func (m Model) startApply() (Model, tea.Cmd) {
 	if m.state.Applying {
 		m.notice = "apply already in progress"
 		return m, nil
 	}
-	envID := m.state.ActivePrefixID
-	if !m.eco.Writable(ecosystem.Environment{ID: envID}) {
-		m.notice = fmt.Sprintf("prefix %s is not writable — make it writable or switch environments before applying", displayPath(envID))
+	var valid []planGroup
+	for _, g := range m.planGroups() {
+		if !g.invalid {
+			valid = append(valid, g)
+		}
+	}
+	if len(valid) == 0 {
+		m.notice = "no executable operations — every group is invalid (a destination is marked under two managers)"
 		return m, nil
 	}
-	plan, _, err := m.eco.Resolve(m.buildIntent())
-	if err != nil {
-		m.notice = "cannot resolve apply plan: " + err.Error()
-		return m, nil
+	for _, g := range valid {
+		eco := m.managers[g.manager]
+		if eco == nil || !eco.Writable(ecosystem.Environment{ID: g.dest}) {
+			m.notice = fmt.Sprintf("destination %s is not writable under %s — make it writable or drop its marks before applying", displayPath(g.dest), g.manager)
+			return m, nil
+		}
 	}
-	batches := plan.Batches
+	var batches []applyBatch
+	dests := []string{}
+	for _, g := range valid {
+		eco := m.managers[g.manager]
+		items := make([]ecosystem.MarkedItem, 0, len(g.installs)+len(g.upgrades)+len(g.removals))
+		for _, p := range g.installs {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpInstall, Name: p.Name, Version: targetVersionFor(p, g.manager)})
+		}
+		for _, p := range g.upgrades {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpUpgrade, Name: p.Name, Version: targetVersionFor(p, g.manager)})
+		}
+		for _, p := range g.removals {
+			items = append(items, ecosystem.MarkedItem{Op: ecosystem.OpRemove, Name: p.Name})
+		}
+		dests = append(dests, g.dest)
+		plan, _, err := eco.Resolve(ecosystem.Intent{Env: ecosystem.Environment{ID: g.dest}, Items: items})
+		if err != nil {
+			m.notice = "cannot resolve apply plan for " + displayPath(g.dest) + ": " + err.Error()
+			return m, nil
+		}
+		for _, b := range plan.Batches {
+			batches = append(batches, applyBatch{dest: g.dest, manager: g.manager, batch: b})
+		}
+	}
 	if len(batches) == 0 {
 		m.screen = ScreenList
 		return m, nil
 	}
+	var newly []string
+	for _, d := range dests {
+		wasHeld := false
+		if m.locks != nil {
+			wasHeld = m.locks.IsHeld(d)
+			if err := m.locks.Acquire(d); err != nil {
+				for _, n := range newly {
+					m.locks.Release(n)
+				}
+				m.notice = heldNotice(d, err)
+				return m, nil
+			}
+		}
+		if !wasHeld {
+			newly = append(newly, d)
+		}
+	}
 	m.state.Applying = true
 	m.applyBatches = batches
 	m.applyBatchIdx = 0
+	m.applyDests = dests
+	m.applyLocks = newly
 	m.applyFailed = 0
 	m.applyDone = false
+	m.applyAborted = false
 	m.applyLog = nil
-	m.applyCurrent = batches[0].Label
+	for _, g := range m.planGroups() {
+		if g.invalid {
+			m.applyLog = append(m.applyLog, "skipped "+displayPath(g.dest)+" — destination is marked under two managers; clear one manager's marks there to run it")
+		}
+	}
+	m.applyCurrent = batches[0].cmdLine()
 	m.applyFrom = map[string]string{}
-	if ps := m.state.Active(); ps != nil {
-		for _, p := range ps.Packages {
-			if p.Mark != domain.MarkNone {
-				m.applyFrom[p.Name] = p.InstalledVersion
+	for _, d := range dests {
+		if ps := m.state.Prefixes[d]; ps != nil {
+			for _, p := range ps.Packages {
+				if p.HasMarks() {
+					m.applyFrom[d+"\x00"+p.Name] = p.InstalledVersion
+				}
 			}
 		}
 	}
@@ -757,24 +917,26 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// nextBatchCmd runs the queued batch through the ecosystem and captures its
-// combined raw output so the apply screen can show the manager's log while
-// the interface stays up. It stores the batch's cancel func so ctrl+c can
-// abort a running invocation.
+// nextBatchCmd runs the queued batch through its destination's own manager
+// and captures its combined raw output so the apply screen can show the
+// manager's log while the interface stays up. It stores the batch's cancel
+// func so ctrl+c can abort a running invocation.
 func (m *Model) nextBatchCmd() tea.Cmd {
 	if m.applyBatchIdx >= len(m.applyBatches) {
 		return m.finishApplyCmd()
 	}
-	batch := m.applyBatches[m.applyBatchIdx]
+	ab := m.applyBatches[m.applyBatchIdx]
 	idx := m.applyBatchIdx
-	cmdLine := batch.Label
-	envID := m.state.ActivePrefixID
-	eco := m.eco
+	cmdLine := ab.cmdLine()
+	dest := ab.dest
+	manager := ab.manager
+	batch := ab.batch
+	eco := m.managers[manager]
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	m.applyCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
-		out, err := eco.Execute(ctx, ecosystem.Environment{ID: envID}, batch)
+		out, err := eco.Execute(ctx, ecosystem.Environment{ID: dest}, batch)
 		return applyBatchMsg{idx: idx, cmdLine: cmdLine, output: out, err: err}
 	}
 }
@@ -799,47 +961,84 @@ func (m *Model) appendApplyLog(cmdLine, output string, err error) {
 	}
 }
 
-// finishApplyCmd re-reads the actual on-disk state after the run instead of
-// assuming the plan succeeded.
+// groupComplete reports whether ab is the last queued invocation of its
+// (destination, manager) group; batches are queued group by group in order.
+func (m Model) groupComplete(ab applyBatch) bool {
+	return m.applyBatchIdx >= len(m.applyBatches) ||
+		m.applyBatches[m.applyBatchIdx].dest != ab.dest ||
+		m.applyBatches[m.applyBatchIdx].manager != ab.manager
+}
+
+// appendGroupResult records one finished group's outcome in the apply log so
+// each group's result is reported even when other groups fail.
+func (m *Model) appendGroupResult(ab applyBatch, ok bool, skipped int) {
+	label := "group " + displayPath(ab.dest) + " via " + ab.manager
+	if ok {
+		m.applyLog = append(m.applyLog, label+": ok")
+		return
+	}
+	if skipped > 0 {
+		m.applyLog = append(m.applyLog, fmt.Sprintf("%s: FAILED — remaining %d invocation(s) not started", label, skipped))
+		return
+	}
+	m.applyLog = append(m.applyLog, label+": FAILED")
+}
+
+// finishApplyCmd re-reads the actual on-disk state of every touched
+// destination after the run instead of assuming the plan succeeded.
 func (m Model) finishApplyCmd() tea.Cmd {
-	id := m.state.ActivePrefixID
-	eco := m.eco
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: id})
-		if err != nil {
-			return applyReloadMsg{prefixID: id, err: err}
+	dests := m.applyDests
+	managerFor := map[string]ecosystem.Ecosystem{}
+	for _, ab := range m.applyBatches {
+		if _, ok := managerFor[ab.dest]; !ok {
+			managerFor[ab.dest] = m.managers[ab.manager]
 		}
-		return applyReloadMsg{prefixID: id, pkgs: toPkgStates(list)}
+	}
+	return func() tea.Msg {
+		pkgsByDest := map[string]map[string]*domain.PkgState{}
+		errs := map[string]error{}
+		for _, d := range dests {
+			eco := managerFor[d]
+			if eco == nil {
+				eco = m.eco()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			list, err := eco.ListInstalled(ctx, ecosystem.Environment{ID: d})
+			cancel()
+			if err != nil {
+				errs[d] = err
+				continue
+			}
+			pkgsByDest[d] = toPkgStates(list)
+		}
+		return applyReloadMsg{pkgsByDest: pkgsByDest, errs: errs}
 	}
 }
 
-// reconcileMarks clears marks whose effect is visible on disk after an apply
-// run; operations that did not take effect keep their mark for a retry.
-func (m *Model) reconcileMarks() {
-	ps := m.state.Active()
+// reconcileDestMarks clears marks whose effect is visible on disk after an
+// apply run; operations that did not take effect keep their mark for a retry.
+func (m *Model) reconcileDestMarks(dest string) {
+	ps := m.state.Prefixes[dest]
 	if ps == nil {
 		return
 	}
 	for name, p := range ps.Packages {
-		if p.Mark == domain.MarkNone {
-			continue
-		}
-		switch p.Mark {
-		case domain.MarkInstall:
-			if p.Installed() {
-				m.state.Revert(ps.ID, name)
-			}
-		case domain.MarkRemove:
-			if !p.Installed() {
-				m.state.Revert(ps.ID, name)
-			}
-		case domain.MarkUpgrade:
-			from := m.applyFrom[name]
-			if (from != "" && p.InstalledVersion != from) ||
-				(p.TargetVersion != "" && p.InstalledVersion == p.TargetVersion) {
-				m.state.Revert(ps.ID, name)
+		for manager, entry := range p.Marks {
+			switch entry.Mark {
+			case domain.MarkInstall:
+				if p.Installed() {
+					p.RevertFor(manager)
+				}
+			case domain.MarkRemove:
+				if !p.Installed() {
+					p.RevertFor(manager)
+				}
+			case domain.MarkUpgrade:
+				from := m.applyFrom[dest+"\x00"+name]
+				if (from != "" && p.InstalledVersion != from) ||
+					(entry.TargetVersion != "" && p.InstalledVersion == entry.TargetVersion) {
+					p.RevertFor(manager)
+				}
 			}
 		}
 	}
@@ -880,7 +1079,7 @@ func measureSizesCmd(prefixID string, names []string) tea.Cmd {
 
 // loadEnvCmd lists the environment's installed packages via the ecosystem.
 func (m Model) loadEnvCmd(prefixID string) tea.Cmd {
-	eco := m.eco
+	eco := m.eco()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
@@ -894,15 +1093,26 @@ func (m Model) loadEnvCmd(prefixID string) tea.Cmd {
 
 // applyLoaded merges freshly loaded packages into the prefix state,
 // preserving pending marks and cached latest versions of packages that are
-// still present.
+// still present. Rows absent from disk but carrying an install/upgrade mark
+// (a pending operation) survive the reload so late loads cannot eat marks.
 func (m *Model) applyLoaded(prefixID string, pkgs map[string]*domain.PkgState) {
 	old := m.state.Prefixes[prefixID]
 	if old != nil {
 		for name, np := range pkgs {
 			if op, ok := old.Packages[name]; ok {
-				np.Mark = op.Mark
-				np.TargetVersion = op.TargetVersion
+				np.Marks = op.Marks
 				np.LatestVersion = op.LatestVersion
+			}
+		}
+		for name, op := range old.Packages {
+			if _, ok := pkgs[name]; ok {
+				continue
+			}
+			for _, e := range op.Marks {
+				if e.Mark == domain.MarkInstall || e.Mark == domain.MarkUpgrade {
+					pkgs[name] = op
+					break
+				}
 			}
 		}
 	}
@@ -912,49 +1122,48 @@ func (m *Model) applyLoaded(prefixID string, pkgs map[string]*domain.PkgState) {
 	}
 }
 
-// visibleRows returns the rows to render for the active prefix, with the
-// active filter and any transient local match applied.
-func (m Model) visibleRows() []*domain.PkgState {
-	ps := m.state.Active()
-	if ps == nil {
-		return nil
-	}
-	rows := ps.Rows()
+// displayRows is what the list shows and the cursor moves over: one unified
+// row per package name across all destinations of the active manager, or the
+// registry-ordered search results while a search is active.
+func (m Model) displayRows() []domain.UnifiedRow {
 	if m.searchActive {
-		// Registry results keep the order returned by the registry (pages are
-		// appended); they are never re-sorted. Marked leftovers from earlier
-		// queries and installed matches follow, name-sorted for stability.
-		kept := make([]*domain.PkgState, 0, len(rows))
-		seen := make(map[string]bool, len(m.searchOrder))
-		for _, name := range m.searchOrder {
-			if p := ps.Packages[name]; p != nil && p.Origin == domain.OriginSearch {
-				kept = append(kept, p)
-				seen[name] = true
-			}
-		}
-		var leftovers []*domain.PkgState
-		var installed []*domain.PkgState
-		for _, r := range rows {
-			if seen[r.Name] {
-				continue
-			}
-			switch {
-			case r.Origin == domain.OriginSearch:
-				leftovers = append(leftovers, r)
-			case r.Installed() && m.searchNames[r.Name]:
-				installed = append(installed, r)
-			}
-		}
-		sort.Slice(leftovers, func(i, j int) bool { return leftovers[i].Name < leftovers[j].Name })
-		sort.Slice(installed, func(i, j int) bool { return installed[i].Name < installed[j].Name })
-		rows = append(append(kept, leftovers...), installed...)
+		return m.searchDisplayRows()
 	}
+	return m.unifiedDisplayRows()
+}
+
+// activePrefixes returns the loaded states and rank table of every
+// destination of the active manager.
+func (m Model) activePrefixes() ([]*domain.PrefixState, map[string]string) {
+	var prefixes []*domain.PrefixState
+	ranks := map[string]string{}
+	for _, e := range m.envs() {
+		if ps := m.state.Prefixes[e.ID]; ps != nil {
+			prefixes = append(prefixes, ps)
+			ranks[e.ID] = e.Rank
+		}
+	}
+	return prefixes, ranks
+}
+
+// unifiedTotal counts the distinct package names across all destinations of
+// the active manager (before any filter).
+func (m Model) unifiedTotal() int {
+	prefixes, ranks := m.activePrefixes()
+	return len(domain.GroupByName(prefixes, ranks))
+}
+
+// unifiedDisplayRows aggregates every destination of the active manager by
+// package name and applies the active filter, local match and sort.
+func (m Model) unifiedDisplayRows() []domain.UnifiedRow {
+	prefixes, ranks := m.activePrefixes()
+	rows := domain.GroupByName(prefixes, ranks)
 	if m.filterPred != nil {
-		kept := make([]*domain.PkgState, 0, len(rows))
-		for _, r := range rows {
-			v := filter.View(r.Name, r.Installed(), r.Upgradable(), r.Unhealthy)
+		kept := make([]domain.UnifiedRow, 0, len(rows))
+		for _, u := range rows {
+			v := filter.View(u.Name, u.Installed(), u.Upgradable(), u.Unhealthy())
 			if m.filterPred(v) {
-				kept = append(kept, r)
+				kept = append(kept, u)
 			}
 		}
 		rows = kept
@@ -962,74 +1171,244 @@ func (m Model) visibleRows() []*domain.PkgState {
 	if m.prompt != nil && m.prompt.kind == PromptLocal {
 		pat := strings.ToLower(m.prompt.input.Value())
 		if pat != "" {
-			kept := make([]*domain.PkgState, 0, len(rows))
-			for _, r := range rows {
-				if r.Installed() && strings.Contains(strings.ToLower(r.Name), pat) {
-					kept = append(kept, r)
+			kept := make([]domain.UnifiedRow, 0, len(rows))
+			for _, u := range rows {
+				if u.Installed() && strings.Contains(strings.ToLower(u.Name), pat) {
+					kept = append(kept, u)
 				}
 			}
 			rows = kept
 		}
 	}
-	if !m.searchActive {
-		domain.SortRows(rows, m.state.SortKey) // sorting applies to the local list only
-	}
+	domain.SortUnified(rows, m.state.SortKey) // sorting applies to the local list only
 	return rows
 }
 
-// selectedRow returns the package under the cursor, or nil.
-func (m *Model) selectedRow() *domain.PkgState {
-	rows := m.visibleRows()
+// searchDisplayRows keeps the registry result order of the active search;
+// each result is a unified row without cross-destination aggregation. Marked
+// leftovers from earlier queries and installed matches follow, name-sorted
+// for stability.
+func (m Model) searchDisplayRows() []domain.UnifiedRow {
+	ps := m.state.Active()
+	if ps == nil {
+		return nil
+	}
+	var rows []*domain.PkgState
+	seen := make(map[string]bool, len(m.searchOrder))
+	for _, name := range m.searchOrder {
+		if p := ps.Packages[name]; p != nil && p.Origin == domain.OriginSearch {
+			rows = append(rows, p)
+			seen[name] = true
+		}
+	}
+	var leftovers []*domain.PkgState
+	var installed []*domain.PkgState
+	for _, r := range ps.Rows() {
+		if seen[r.Name] {
+			continue
+		}
+		switch {
+		case r.Origin == domain.OriginSearch:
+			leftovers = append(leftovers, r)
+		case r.Installed() && m.searchNames[r.Name]:
+			installed = append(installed, r)
+		}
+	}
+	sort.Slice(leftovers, func(i, j int) bool { return leftovers[i].Name < leftovers[j].Name })
+	sort.Slice(installed, func(i, j int) bool { return installed[i].Name < installed[j].Name })
+	rows = append(append(rows, leftovers...), installed...)
+	out := make([]domain.UnifiedRow, 0, len(rows))
+	for _, p := range rows {
+		u := domain.UnifiedRow{Name: p.Name, Row: p}
+		if p.Installed() {
+			u.Headline = p
+			u.HeadlineID = ps.ID
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// visibleRows projects the displayed unified rows onto their representative
+// package rows.
+func (m Model) visibleRows() []*domain.PkgState {
+	rows := m.displayRows()
+	out := make([]*domain.PkgState, 0, len(rows))
+	for i := range rows {
+		if rows[i].Row != nil {
+			out = append(out, rows[i].Row)
+		}
+	}
+	return out
+}
+
+// selectedUnified returns the unified row under the cursor, or nil.
+func (m Model) selectedUnified() *domain.UnifiedRow {
+	rows := m.displayRows()
 	if m.cursor >= len(rows) {
 		return nil
 	}
-	return rows[m.cursor]
+	return &rows[m.cursor]
 }
 
-// markInstallOrUpgrade is aptitude's `+` semantics: install a not-installed
-// package, or upgrade an installed one that has a newer version known.
+// markInstallOrUpgrade is aptitude's `+` semantics on the unified list: a
+// not-installed package goes through install-target selection (spec: install
+// target selection), an installed one is upgraded at its headline destination
+// when that copy is outdated.
 func (m *Model) markInstallOrUpgrade() {
-	r := m.selectedRow()
-	if r == nil {
+	u := m.selectedUnified()
+	if u == nil {
 		return
 	}
+	if !u.Installed() {
+		m.markInstallTargets(u.Name)
+		return
+	}
+	h := u.Headline
 	switch {
-	case !r.Installed():
-		m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkInstall)
-	case r.Upgradable():
-		m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkUpgrade)
-	case r.LatestVersion == "":
-		m.notice = "latest version unknown for " + r.Name + " — press u to refresh"
+	case h.Upgradable():
+		m.state.SetMark(u.HeadlineID, u.Name, m.activeManagerID, domain.MarkUpgrade)
+	case u.Upgradable():
+		m.notice = u.Name + " is upgradable on another destination — open the info screen to mark a specific one"
+	case h.LatestVersion == "":
+		m.notice = "latest version unknown for " + u.Name + " — press u to refresh"
 	default:
-		m.notice = r.Name + " is already at the latest version"
+		m.notice = u.Name + " is already at the latest version"
 	}
 }
 
-// markRemove marks the selected installed row for removal (toggle).
+// markRemove marks the selected row for removal at its headline destination
+// (toggle); a package absent everywhere is ignored.
 func (m *Model) markRemove() {
-	r := m.selectedRow()
-	if r == nil || !r.Installed() {
+	u := m.selectedUnified()
+	if u == nil || !u.Installed() {
 		return
 	}
-	m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkRemove)
+	m.state.SetMark(u.HeadlineID, u.Name, m.activeManagerID, domain.MarkRemove)
 }
 
-// markHold marks the selected row as held, excluding it from bulk upgrades.
+// markHold marks every installed copy of the selected row as held, excluding
+// them from bulk upgrades.
 func (m *Model) markHold() {
-	r := m.selectedRow()
-	if r == nil {
+	u := m.selectedUnified()
+	if u == nil || !u.Installed() {
 		return
 	}
-	m.state.SetMark(m.state.ActivePrefixID, r.Name, domain.MarkHold)
+	for _, e := range m.envs() {
+		ps := m.state.Prefixes[e.ID]
+		if ps == nil {
+			continue
+		}
+		if p := ps.Packages[u.Name]; p != nil && p.Installed() {
+			p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkHold})
+		}
+	}
 }
 
-// markRevert clears any pending mark on the selected row.
+// markRevert clears the active manager's pending mark on the selected row in
+// every destination of the active manager (the row aggregates them).
 func (m *Model) markRevert() {
-	r := m.selectedRow()
-	if r == nil {
+	u := m.selectedUnified()
+	if u == nil {
 		return
 	}
-	m.state.Revert(m.state.ActivePrefixID, r.Name)
+	for _, e := range m.envs() {
+		m.state.Revert(e.ID, u.Name, m.activeManagerID)
+	}
+}
+
+// markInstallTargets resolves the eligible destinations for installing name —
+// those of the active manager where it is not installed and which are
+// writable. Exactly one eligible destination records the mark directly (no
+// popup); more than one opens the multi-select target popup.
+func (m *Model) markInstallTargets(name string) {
+	var eligible []ecosystem.Environment
+	for _, e := range m.envs() {
+		if !m.eco().Writable(e) {
+			continue
+		}
+		if ps := m.state.Prefixes[e.ID]; ps != nil {
+			if p := ps.Packages[name]; p != nil && p.Installed() {
+				continue
+			}
+		}
+		eligible = append(eligible, e)
+	}
+	if len(eligible) == 0 {
+		m.notice = "no eligible destination to install " + name + " into"
+		return
+	}
+	if len(eligible) == 1 {
+		m.setInstallMarkForDest(eligible[0].ID, name)
+		m.notice = name + " marked for install on " + displayPath(eligible[0].ID)
+		return
+	}
+	sel := map[string]bool{}
+	for _, e := range eligible {
+		if ps := m.state.Prefixes[e.ID]; ps != nil {
+			if p := ps.Packages[name]; p != nil && p.MarkFor(m.activeManagerID) == domain.MarkInstall {
+				sel[e.ID] = true
+			}
+		}
+	}
+	m.installName = name
+	m.installTargets = eligible
+	m.installTargetSel = sel
+	m.installTargetCursor = 0
+	m.screen = ScreenTargets
+}
+
+// setInstallMarkForDest records the active manager's install mark on name in
+// one destination, creating the package row there when needed.
+func (m *Model) setInstallMarkForDest(destID, name string) {
+	ps := m.state.Prefixes[destID]
+	if ps == nil {
+		ps = &domain.PrefixState{ID: destID, Packages: map[string]*domain.PkgState{}}
+		m.state.Prefixes[destID] = ps
+	}
+	p := ps.Packages[name]
+	if p == nil {
+		latest := ""
+		if aps := m.state.Active(); aps != nil {
+			if ap := aps.Packages[name]; ap != nil {
+				latest = ap.LatestVersion
+			}
+		}
+		p = &domain.PkgState{Name: name, Origin: domain.OriginSearch, LatestVersion: latest}
+		ps.Packages[name] = p
+	}
+	p.SetMarkFor(m.activeManagerID, domain.MarkInstall)
+}
+
+// markDestInstall marks the info package for install on the destination under
+// the cursor of the per-destination table.
+func (m *Model) markDestInstall() {
+	envs := m.envs()
+	if m.infoDestCursor >= len(envs) {
+		return
+	}
+	m.setInstallMarkForDest(envs[m.infoDestCursor].ID, m.infoName)
+}
+
+// markDestRemove marks the info package for removal from the destination
+// under the cursor of the per-destination table (toggle).
+func (m *Model) markDestRemove() {
+	envs := m.envs()
+	if m.infoDestCursor >= len(envs) {
+		return
+	}
+	e := envs[m.infoDestCursor]
+	ps := m.state.Prefixes[e.ID]
+	if ps == nil {
+		m.notice = "not installed on " + displayPath(e.ID)
+		return
+	}
+	p := ps.Packages[m.infoName]
+	if p == nil || !p.Installed() {
+		m.notice = "not installed on " + displayPath(e.ID)
+		return
+	}
+	m.state.SetMark(e.ID, m.infoName, m.activeManagerID, domain.MarkRemove)
 }
 
 // submitFilter parses the prompt expression; on failure the previous filter
