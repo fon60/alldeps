@@ -128,12 +128,15 @@ type Conflict struct {
 // type-switching on the manager id. HasDedupe marks managers whose installed
 // copies can be redundant across destinations (the Node family), so the app
 // can derive align/consolidate/remove conflicts from its own list state.
+// HasSearch marks ecosystems with a queryable package index; when false the
+// app declines registry search with a notice instead of a failing query.
 type Caps struct {
 	HasConflictResolution bool
 	HasNativeLock         bool
 	GlobalScope           bool
 	ProjectScope          bool
 	HasDedupe             bool
+	HasSearch             bool
 }
 
 // Doc is the manager-agnostic package document shown on the info screen,

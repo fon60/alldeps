@@ -122,7 +122,7 @@ func (e *Ecosystem) Capabilities() ecosystem.Caps {
 	// operates on the global scope of a Node prefix and on project
 	// directories. The Node family does carry redundant cross-destination
 	// copies, so dedupe is advertised (the app derives those conflicts).
-	return ecosystem.Caps{GlobalScope: true, ProjectScope: true, HasDedupe: true}
+	return ecosystem.Caps{GlobalScope: true, ProjectScope: true, HasDedupe: true, HasSearch: true}
 }
 
 func (e *Ecosystem) Discover(ctx context.Context) ([]ecosystem.Environment, error) {

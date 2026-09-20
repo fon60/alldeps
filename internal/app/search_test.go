@@ -2,11 +2,13 @@ package app
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
 	"npmitude/internal/domain"
+	"npmitude/internal/ecosystem"
+	"npmitude/internal/lock"
 )
 
 func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
@@ -204,6 +206,26 @@ func TestSearchKeyOpensPrompt(t *testing.T) {
 	m = m.step(t, keyMsg(t, "/"))
 	if m.prompt == nil || m.prompt.kind != PromptSearch {
 		t.Fatal("search prompt should be open after /")
+	}
+}
+
+func TestSearchKeyRefusedWithoutHasSearch(t *testing.T) {
+	eco := newStubEco()
+	caps := ecosystem.Caps{GlobalScope: true} // no HasSearch
+	eco.caps = &caps
+	m := New(eco)
+	m.locks = lock.New(filepath.Join(t.TempDir(), "locks"))
+
+	next, cmd := m.Update(keyMsg(t, "/"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("no search command may run when the active manager lacks HasSearch")
+	}
+	if m.prompt != nil {
+		t.Fatal("the search prompt must not open without HasSearch")
+	}
+	if !strings.Contains(m.notice, "search not available") {
+		t.Fatalf("expected a search-not-available notice, got %q", m.notice)
 	}
 }
 

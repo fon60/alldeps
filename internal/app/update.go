@@ -425,6 +425,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prompt = newPrompt(PromptLocal)
 		m.prompt.input.Focus()
 	case "/":
+		if !m.eco().Capabilities().HasSearch {
+			m.notice = "search not available for this ecosystem"
+			return m, nil
+		}
 		m.prompt = newPrompt(PromptSearch)
 		m.prompt.input.Focus()
 	case "+":

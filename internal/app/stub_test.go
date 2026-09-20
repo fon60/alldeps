@@ -134,7 +134,7 @@ func (s *stubEco) Capabilities() ecosystem.Caps {
 	if s.caps != nil {
 		return *s.caps
 	}
-	return ecosystem.Caps{GlobalScope: true}
+	return ecosystem.Caps{GlobalScope: true, HasSearch: true}
 }
 
 func (s *stubEco) LatestVersions(ctx context.Context, env ecosystem.Environment, names []string) (map[string]string, int, error) {

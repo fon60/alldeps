@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"npmitude/internal/adapter/gomod"
 	"npmitude/internal/adapter/npm"
 	"npmitude/internal/app"
 	"npmitude/internal/ecosystem"
@@ -39,7 +40,7 @@ func buildModel(ctx context.Context, mode app.Mode, root string) app.Model {
 	if mode == app.ModeGlobal {
 		return app.New(npm.New())
 	}
-	adapters := []ecosystem.Ecosystem{npm.New()}
+	adapters := []ecosystem.Ecosystem{npm.New(), gomod.NewProject(root)}
 	applicable := app.DetectApplicable(adapters, root)
 	managers := make(map[string]ecosystem.Ecosystem, len(applicable))
 	ids := make([]string, 0, len(applicable))
