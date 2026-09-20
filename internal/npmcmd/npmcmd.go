@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"npmitude/internal/registry"
 	"npmitude/internal/sizes"
@@ -109,30 +110,58 @@ func ParseLS(data []byte) (map[string]ParsedPkg, error) {
 	return pkgs, nil
 }
 
-// NodeAndNPM returns the absolute paths of a prefix's own node binary and npm
-// CLI entry point.
-func NodeAndNPM(prefixID string) (node, npmCLI string) {
-	node = filepath.Join(prefixID, "bin", "node")
-	npmCLI = filepath.Join(prefixID, "lib", "node_modules", "npm", "bin", "npm-cli.js")
-	return
+// NPMCommand returns the argv that launches prefixID's npm. A prefix with the
+// standard layout (<prefix>/bin/node + <prefix>/lib/node_modules/npm/bin/
+// npm-cli.js) runs its own node + npm; otherwise the PATH npm is used (e.g.
+// Debian/Ubuntu system prefixes keep npm elsewhere). In strict mode — global
+// operations that must hit prefixID — the fallback is only accepted when that
+// npm's own prefix matches.
+func NPMCommand(ctx context.Context, prefixID string, strict bool) ([]string, error) {
+	node := filepath.Join(prefixID, "bin", "node")
+	npmCLI := filepath.Join(prefixID, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+	if regularFile(node) && regularFile(npmCLI) {
+		return []string{node, npmCLI}, nil
+	}
+	p, err := exec.LookPath("npm")
+	if err != nil {
+		return nil, fmt.Errorf("prefix %s has no standard npm layout and no npm on PATH", prefixID)
+	}
+	if strict {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		out, perr := exec.CommandContext(cctx, p, "config", "get", "prefix").Output()
+		if perr == nil && strings.TrimSpace(string(out)) != prefixID {
+			return nil, fmt.Errorf("prefix %s has no standard npm layout and PATH npm serves a different prefix", prefixID)
+		}
+	}
+	return []string{p}, nil
 }
 
-// RunNPMJSON runs a command via the prefix's own node + npm and returns
-// stdout. A non-zero exit (e.g. ELSPROBLEMS) is not an error as long as
-// stdout was produced; only spawn/execution failures are.
+func regularFile(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// RunNPMJSON runs a global-scope command via the prefix's own node + npm and
+// returns stdout. A non-zero exit (e.g. ELSPROBLEMS) is not an error as long
+// as stdout was produced; only spawn/execution failures are.
 func RunNPMJSON(ctx context.Context, prefixID string, args ...string) ([]byte, error) {
-	return runNPMJSON(ctx, prefixID, "", args...)
+	return runNPMJSON(ctx, prefixID, "", true, args...)
 }
 
 // RunNPMJSONIn is RunNPMJSON with the npm process rooted at workdir, so
-// project-scoped commands (no -g) operate on that directory's tree.
+// project-scoped commands (no -g) operate on that directory's tree. Any
+// working npm toolchain is acceptable there; the prefix only provides node.
 func RunNPMJSONIn(ctx context.Context, prefixID, workdir string, args ...string) ([]byte, error) {
-	return runNPMJSON(ctx, prefixID, workdir, args...)
+	return runNPMJSON(ctx, prefixID, workdir, false, args...)
 }
 
-func runNPMJSON(ctx context.Context, prefixID, workdir string, args ...string) ([]byte, error) {
-	node, npmCLI := NodeAndNPM(prefixID)
-	cmd := exec.CommandContext(ctx, node, append([]string{npmCLI}, args...)...)
+func runNPMJSON(ctx context.Context, prefixID, workdir string, strict bool, args ...string) ([]byte, error) {
+	argv, err := NPMCommand(ctx, prefixID, strict)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, argv[0], append(append([]string{}, argv[1:]...), args...)...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -140,7 +169,7 @@ func runNPMJSON(ctx context.Context, prefixID, workdir string, args ...string) (
 	cmd.Stdout = &stdout
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && stdout.Len() > 0 {
@@ -217,17 +246,17 @@ func ReadmeAt(moduleDir, name string) (string, bool) {
 // GetRegistry asks the prefix's own npm for its configured registry URL
 // (design D3: ask npm itself rather than re-implementing .npmrc resolution).
 func GetRegistry(ctx context.Context, prefixID string) (string, error) {
-	return getRegistry(ctx, prefixID, "")
+	return getRegistry(ctx, prefixID, "", true)
 }
 
 // GetRegistryIn is GetRegistry with npm rooted at workdir, so a project's own
 // .npmrc takes effect.
 func GetRegistryIn(ctx context.Context, prefixID, workdir string) (string, error) {
-	return getRegistry(ctx, prefixID, workdir)
+	return getRegistry(ctx, prefixID, workdir, false)
 }
 
-func getRegistry(ctx context.Context, prefixID, workdir string) (string, error) {
-	data, err := RunNPMJSONIn(ctx, prefixID, workdir, "config", "get", "registry")
+func getRegistry(ctx context.Context, prefixID, workdir string, strict bool) (string, error) {
+	data, err := runNPMJSON(ctx, prefixID, workdir, strict, "config", "get", "registry")
 	if err != nil {
 		return "", err
 	}

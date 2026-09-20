@@ -1,4 +1,4 @@
-qpackage app
+package app
 
 import (
 	"fmt"

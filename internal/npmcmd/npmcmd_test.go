@@ -1,6 +1,7 @@
 package npmcmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,5 +189,64 @@ func TestLocalDocAndReadme(t *testing.T) {
 	}
 	if _, ok := Readme(dir, "foo-noreadme"); ok {
 		t.Fatal("want no readme for absent file")
+	}
+}
+
+func TestNPMCommandStandardLayout(t *testing.T) {
+	dir := t.TempDir()
+	node := filepath.Join(dir, "bin", "node")
+	npmCLI := filepath.Join(dir, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+	for _, p := range []string{node, npmCLI} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	argv, err := NPMCommand(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) != 2 || argv[0] != node || argv[1] != npmCLI {
+		t.Fatalf("argv = %v", argv)
+	}
+}
+
+func TestNPMCommandFallbackToPathNPM(t *testing.T) {
+	prefix := t.TempDir()
+	bin := t.TempDir()
+	npmPath := filepath.Join(bin, "npm")
+	writeNPM := func(answer string) {
+		script := "#!/bin/sh\nif [ \"$1\" = \"config\" ]; then echo " + answer + "; exit 0; fi\n"
+		if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeNPM("/srv/other")
+	argv, err := NPMCommand(context.Background(), prefix, false)
+	if err != nil {
+		t.Fatalf("project mode should accept any PATH npm: %v", err)
+	}
+	if len(argv) != 1 || argv[0] != npmPath {
+		t.Fatalf("argv = %v", argv)
+	}
+
+	if _, err := NPMCommand(context.Background(), prefix, true); err == nil {
+		t.Fatal("strict mode must reject a PATH npm serving a different prefix")
+	}
+
+	writeNPM(prefix)
+	if _, err := NPMCommand(context.Background(), prefix, true); err != nil {
+		t.Fatalf("strict mode must accept a matching PATH npm: %v", err)
+	}
+}
+
+func TestNPMCommandNoLayoutNoPathNPM(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := NPMCommand(context.Background(), t.TempDir(), false); err == nil {
+		t.Fatal("want error when prefix lacks the standard layout and PATH has no npm")
 	}
 }

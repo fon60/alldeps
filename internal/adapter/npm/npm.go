@@ -301,20 +301,27 @@ func (e *Ecosystem) newBatch(op ecosystem.OpKind, items []ecosystem.Item) ecosys
 // comes from a post-run ListInstalled. Project batches run without -g, rooted
 // in the project directory, with the active prefix's toolchain.
 func (e *Ecosystem) Execute(ctx context.Context, env ecosystem.Environment, batch ecosystem.Batch) (string, error) {
-	var node, npmCLI string
+	var (
+		argv []string
+		err  error
+	)
 	if e.projectRoot != "" {
-		prefixID, err := prefix.Active(ctx)
-		if err != nil {
-			return "", fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, err)
+		prefixID, perr := prefix.Active(ctx)
+		if perr != nil {
+			return "", fmt.Errorf("no active npm prefix for project %s: %w", e.projectRoot, perr)
 		}
-		node, npmCLI = npmcmd.NodeAndNPM(prefixID)
+		argv, err = npmcmd.NPMCommand(ctx, prefixID, false)
 	} else {
-		node, npmCLI = npmcmd.NodeAndNPM(env.ID)
+		argv, err = npmcmd.NPMCommand(ctx, env.ID, true)
 	}
-	args := append([]string{npmCLI}, opVerbs[batch.Op]...)
+	if err != nil {
+		return "", err
+	}
+	verbs := opVerbs[batch.Op]
 	if e.projectRoot != "" {
-		args = append([]string{npmCLI}, projectOpVerbs[batch.Op]...)
+		verbs = projectOpVerbs[batch.Op]
 	}
+	args := append(append([]string{}, argv[1:]...), verbs...)
 	for _, it := range batch.Items {
 		if it.Version != "" {
 			args = append(args, it.Name+"@"+it.Version)
@@ -322,7 +329,7 @@ func (e *Ecosystem) Execute(ctx context.Context, env ecosystem.Environment, batc
 		}
 		args = append(args, it.Name)
 	}
-	cmd := exec.CommandContext(ctx, node, args...)
+	cmd := exec.CommandContext(ctx, argv[0], args...)
 	if e.projectRoot != "" {
 		cmd.Dir = e.projectRoot
 	}

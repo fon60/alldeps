@@ -127,6 +127,13 @@ func TestProjectExecuteIsScopedToRootWithoutGlobalFlag(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "node"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	npmCLI := filepath.Join(prefixDir, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+	if err := os.MkdirAll(filepath.Dir(npmCLI), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(npmCLI, []byte("# fake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	fakeActivePrefix(t, prefixDir)
 
 	root := t.TempDir()

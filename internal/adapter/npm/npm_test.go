@@ -51,6 +51,13 @@ exit 1
 	if err := os.WriteFile(node, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	npmCLI := filepath.Join(dir, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+	if err := os.MkdirAll(filepath.Dir(npmCLI), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(npmCLI, []byte("# fake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
