@@ -1,32 +1,4 @@
-# package-operations Specification
-
-## Purpose
-
-Implement aptitude's mark-then-apply workflow for global npm packages: pending marks, a confirmed plan preview, and execution through the machine's npm with streamed progress.
-
-## Requirements
-
-### Requirement: Marking operations
-The user SHALL be able to mark the selected package for install, removal, upgrade-to-latest, hold (excluded from bulk upgrades), or revert to no-action. Marks are pending until applied and MUST be reflected in the row's action flag immediately.
-
-#### Scenario: Mark installed package for removal
-- **WHEN** the user issues the remove mark on an installed package
-- **THEN** its action flag becomes `-` and the pending-mark count increases by one
-
-#### Scenario: Toggle mark off
-- **WHEN** the user issues the same mark again on an already marked package
-- **THEN** the mark is cleared and the action flag returns to `*`
-
-### Requirement: Bulk operations
-The user SHALL be able to mark all currently upgradable packages for upgrade in one action, and to clear all pending marks in one action. Held packages MUST NOT be marked by the bulk upgrade action.
-
-#### Scenario: Mark all upgradable
-- **WHEN** three of five installed packages are outdated and none is held, and the user issues mark-all-upgradable
-- **THEN** exactly those three rows show the upgrade action flag
-
-#### Scenario: Clear all marks
-- **WHEN** the user has pending marks on several packages and issues clear-all
-- **THEN** every action flag returns to `*` and the pending count is zero
+## MODIFIED Requirements
 
 ### Requirement: Plan preview before apply
 When the user requests applying pending changes, the system SHALL first display a plan summary. The plan SHALL be organized into groups keyed by (destination, manager); each group lists its packages to install (name and target version, approximate download size), to remove (name and freed disk space), and to upgrade (name, from-version to to-version), together with the destination and manager that group targets. Execution MUST require explicit confirmation; cancelling leaves all marks pending. A group whose destination is marked under two different managers SHALL be shown as invalid and excluded from execution until resolved.
@@ -66,33 +38,7 @@ The system SHALL execute an approved plan by invoking each destination's own pac
 - **WHEN** the user presses ctrl+c while a batch is running
 - **THEN** the invocation is terminated, its error is recorded in the log, the remainder of the plan is aborted, and the completion prompt is still offered so the user can read what happened before returning
 
-### Requirement: Post-apply truth from disk
-After any apply run, the system SHALL re-read the actual installed state of the prefix rather than assuming the plan succeeded in full, and update the list accordingly.
-
-#### Scenario: Partial success
-- **WHEN** a two-operation plan completes with one success and one failure
-- **THEN** the list shows the successful operation's effect and retains the failed package in its pre-operation state
-
-### Requirement: Concurrency guard
-While a plan is executing, the apply screen SHALL accept no input other than ctrl+c (which aborts the running invocation). No second apply run MAY start until the current run finishes.
-
-#### Scenario: Keys ignored during execution
-- **WHEN** the user presses any key — including another apply request — while a plan is still running
-- **THEN** nothing happens, except that ctrl+c aborts the running invocation
-
-### Requirement: Permission failure reporting
-If npm fails because the selected prefix is not writable by the current user, the system SHALL display a clear, actionable message identifying the permission problem and how to proceed (e.g. re-running with elevated privileges), rather than only raw npm error output.
-
-#### Scenario: Non-writable system prefix
-- **WHEN** applying an install to a system-owned prefix without sufficient privileges fails
-- **THEN** the user sees a message stating the prefix is not writable and what to do about it
-
-### Requirement: Exit confirmation
-Quitting the application SHALL require explicit confirmation, protecting unapplied pending marks from accidental loss.
-
-#### Scenario: Confirming quit
-- **WHEN** the user issues quit while pending marks exist
-- **THEN** a confirmation prompt is shown and the application exits only if confirmed
+## ADDED Requirements
 
 ### Requirement: Install target selection
 When the user marks an available (not-installed) package for installation in global mode and more than one destination is eligible, the system SHALL present a popup listing the eligible destinations so the user chooses which one or more to install into. When exactly one destination is eligible, no popup SHALL be shown and that single destination SHALL be used.
