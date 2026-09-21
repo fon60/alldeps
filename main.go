@@ -27,7 +27,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	p := tea.NewProgram(buildModel(ctx, mode, root))
+	p := tea.NewProgram(buildModel(ctx, mode, root), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

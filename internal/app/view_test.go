@@ -236,17 +236,17 @@ func TestListViewportFollowsCursor(t *testing.T) {
 		names = append(names, fmt.Sprintf("pkg%02d", i))
 	}
 	m := modelWithLoadedPrefix(t, "/p", names...)
-	m.width, m.height = 80, 24 // list viewport holds 17 rows
+	m.width, m.height = 80, 24 // list box is 17 lines: header + 16 data rows
 
 	for i := 0; i < 20; i++ {
 		m = m.step(t, keyMsg(t, "j"))
 	}
-	if m.cursor != 20 || m.listTop != 4 {
-		t.Fatalf("after 20 downs: cursor=%d top=%d, want 20/4 (viewport must follow)", m.cursor, m.listTop)
+	if m.cursor != 20 || m.listTop != 5 {
+		t.Fatalf("after 20 downs: cursor=%d top=%d, want 20/5 (viewport must follow)", m.cursor, m.listTop)
 	}
 	out := render80x24(m)
-	if !strings.Contains(out, "pkg04") || strings.Contains(out, "pkg00") {
-		t.Fatalf("viewport must start at row 4 while the cursor is at row 20:\n%s", out)
+	if !strings.Contains(out, "pkg20") || strings.Contains(out, "pkg00") {
+		t.Fatalf("cursor row pkg20 must be rendered and first row pkg00 scrolled out:\n%s", out)
 	}
 
 	for i := 0; i < 20; i++ {
@@ -257,6 +257,30 @@ func TestListViewportFollowsCursor(t *testing.T) {
 	}
 	if out := render80x24(m); !strings.Contains(out, "pkg00") {
 		t.Fatalf("first row must be visible again after scrolling up:\n%s", out)
+	}
+}
+
+func TestListViewportBottomEdge(t *testing.T) {
+	names := make([]string, 0, 30)
+	for i := 0; i < 30; i++ {
+		names = append(names, fmt.Sprintf("pkg%02d", i))
+	}
+	m := modelWithLoadedPrefix(t, "/p", names...)
+	m.width, m.height = 80, 24 // list box is 17 lines: header + 16 data rows
+
+	for i := 0; i < 15; i++ {
+		m = m.step(t, keyMsg(t, "j"))
+	}
+	if m.cursor != 15 || m.listTop != 0 {
+		t.Fatalf("at the bottom edge: cursor=%d top=%d, want 15/0", m.cursor, m.listTop)
+	}
+	m = m.step(t, keyMsg(t, "j")) // one row past the visible range
+	if m.cursor != 16 || m.listTop != 1 {
+		t.Fatalf("one down past the edge: cursor=%d top=%d, want 16/1", m.cursor, m.listTop)
+	}
+	out := render80x24(m)
+	if !strings.Contains(out, "pkg16") || strings.Contains(out, "pkg17") {
+		t.Fatalf("cursor row pkg16 must be the last rendered data row (no row beyond it):\n%s", out)
 	}
 }
 

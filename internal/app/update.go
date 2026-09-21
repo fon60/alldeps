@@ -832,7 +832,8 @@ func (m *Model) clampCursor() {
 	m.syncListTop()
 }
 
-// listHeight is the number of package rows that fit in the list viewport.
+// listHeight is the height of the list box; its first line is the column
+// header, so it holds listHeight()-1 data rows.
 func (m Model) listHeight() int {
 	h := m.height - 2 - 5 // header(2) + description(3) + prompt(1) + status(1)
 	if h < 1 {
@@ -843,10 +844,14 @@ func (m Model) listHeight() int {
 
 // syncListTop keeps the cursor inside the visible viewport: the list scrolls
 // only when the cursor leaves the currently displayed range, in either
-// direction.
+// direction. Visible data rows are one less than the box height because the
+// column header occupies the first line of the box.
 func (m *Model) syncListTop() {
 	n := len(m.visibleRows())
-	h := m.listHeight()
+	h := m.listHeight() - 1
+	if h < 1 {
+		h = 1
+	}
 	maxTop := n - h
 	if maxTop < 0 {
 		maxTop = 0
