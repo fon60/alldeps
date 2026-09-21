@@ -185,6 +185,7 @@ type Doc struct {
 	Versions         []string
 	Latest           string
 	Readme           string
+	UnpackedSizes    map[string]int64 // version -> registry-reported on-disk bytes
 }
 
 type RawDoc struct {
@@ -204,6 +205,9 @@ type RawDoc struct {
 		Dependencies     map[string]string `json:"dependencies"`
 		PeerDependencies map[string]string `json:"peerDependencies"`
 		Bin              any               `json:"bin"`
+		Dist             struct {
+			UnpackedSize int64 `json:"unpackedSize"`
+		} `json:"dist"`
 	} `json:"versions"`
 	DistTags map[string]string `json:"dist-tags"`
 	Readme   string            `json:"readme"`
@@ -309,8 +313,14 @@ func NormalizeDoc(rd *RawDoc) *Doc {
 			}
 		}
 	}
-	for v := range rd.Versions {
+	for v, ver := range rd.Versions {
 		doc.Versions = append(doc.Versions, v)
+		if ver.Dist.UnpackedSize > 0 {
+			if doc.UnpackedSizes == nil {
+				doc.UnpackedSizes = map[string]int64{}
+			}
+			doc.UnpackedSizes[v] = ver.Dist.UnpackedSize
+		}
 	}
 	doc.Latest = rd.DistTags["latest"]
 	return doc

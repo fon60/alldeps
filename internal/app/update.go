@@ -497,6 +497,12 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state.ClearAllMarks(e.ID, m.activeManagerID)
 		}
 		m.notice = "all marks cleared"
+	case "v":
+		u := m.selectedUnified()
+		if u == nil {
+			return m, nil
+		}
+		return m.openVersionsByName(u.Name)
 	case "enter", "d":
 		return m.openInfo()
 	case "S":
@@ -738,8 +744,9 @@ func (m Model) updateInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateVersions handles keys on the versions tab; enter pins the version
-// under the cursor.
+// updateVersions handles keys on the versions tab: j/k move the cursor with a
+// following viewport, g/G jump to first/last (readme-view parity), enter pins
+// the version under the cursor.
 func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	t := &m.tabs[m.tabIdx]
 	n := 0
@@ -755,6 +762,14 @@ func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if t.VerCursor < n-1 {
 			t.VerCursor++
+			m.syncVersionTop(m.tabIdx)
+		}
+	case "g":
+		t.VerCursor = 0
+		m.syncVersionTop(m.tabIdx)
+	case "G":
+		if n > 0 {
+			t.VerCursor = n - 1
 			m.syncVersionTop(m.tabIdx)
 		}
 	case "enter", " ":

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"npmitude/internal/domain"
 	"npmitude/internal/ecosystem"
 	"npmitude/internal/lock"
 )
@@ -258,8 +259,43 @@ func (e *Ecosystem) UnpackedSize(ctx context.Context, env ecosystem.Environment,
 	return 0, nil
 }
 
+// moduleVersions enumerates a module's tagged versions through
+// `go list -m -versions`, which prints the module path followed by every
+// tagged version, space-separated on one line. It runs in the project
+// directory so the module context (and any GOFLAGS/proxy config) applies.
+func (e *Ecosystem) moduleVersions(ctx context.Context, name string) ([]string, error) {
+	bin, err := goBin()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, "list", "-m", "-versions", name)
+	cmd.Dir = e.root
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("go list -m -versions: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	fields := strings.Fields(stdout.String())
+	if len(fields) < 2 {
+		return nil, fmt.Errorf("go list -m -versions: no tagged versions for %s", name)
+	}
+	return fields[1:], nil
+}
+
+// Doc reports the module's published (tagged) versions so the version
+// history works for Go dependencies; there is no richer package document.
 func (e *Ecosystem) Doc(ctx context.Context, env ecosystem.Environment, name string, installed bool) (*ecosystem.Doc, bool, error) {
-	return nil, false, ecosystem.ErrNoRegistry
+	versions, err := e.moduleVersions(ctx, name)
+	if err != nil {
+		return nil, false, err
+	}
+	domain.SortVersions(versions)
+	doc := &ecosystem.Doc{Name: name, Versions: versions}
+	if len(versions) > 0 {
+		doc.Latest = versions[0]
+	}
+	return doc, false, nil
 }
 
 func (e *Ecosystem) Readme(env ecosystem.Environment, name string) (string, bool) {

@@ -232,6 +232,60 @@ func TestGetDocNormalizes(t *testing.T) {
 	}
 }
 
+func TestGetDocParsesPerVersionUnpackedSizes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{
+			"name":"sized",
+			"dist-tags":{"latest":"2.0.0"},
+			"versions":{
+				"1.0.0":{"dist":{"unpackedSize":1500}},
+				"2.0.0":{"dist":{"unpackedSize":48230}}
+			}
+		}`)
+	}))
+	t.Cleanup(srv.Close)
+	doc, err := NewClient(srv.URL).GetDoc(context.Background(), "sized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Versions) != 2 || doc.Latest != "2.0.0" {
+		t.Fatalf("versions/latest = %v / %q", doc.Versions, doc.Latest)
+	}
+	if got := doc.UnpackedSizes["1.0.0"]; got != 1500 {
+		t.Errorf("unpacked size 1.0.0 = %d, want 1500", got)
+	}
+	if got := doc.UnpackedSizes["2.0.0"]; got != 48230 {
+		t.Errorf("unpacked size 2.0.0 = %d, want 48230", got)
+	}
+	if len(doc.UnpackedSizes) != 2 {
+		t.Errorf("unpacked sizes = %v, want exactly the two versions", doc.UnpackedSizes)
+	}
+}
+
+func TestGetDocOmitsVersionsWithoutUnpackedSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{
+			"name":"partial",
+			"dist-tags":{"latest":"1.0.0"},
+			"versions":{
+				"1.0.0":{"dist":{"unpackedSize":100}},
+				"0.9.0":{}
+			}
+		}`)
+	}))
+	t.Cleanup(srv.Close)
+	doc, err := NewClient(srv.URL).GetDoc(context.Background(), "partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.UnpackedSizes["0.9.0"]; ok {
+		t.Errorf("version without dist.unpackedSize must not appear in the size map: %v", doc.UnpackedSizes)
+	}
+	if got := doc.UnpackedSizes["1.0.0"]; got != 100 {
+		t.Errorf("unpacked size 1.0.0 = %d, want 100", got)
+	}
+}
+
 func TestGetDocStringForms(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{

@@ -20,6 +20,8 @@ const (
 	colVer   = 12
 	colCand  = 12
 	colCount = 5 // presence counter: how many further destinations carry the package
+
+	verColVersion = 14 // versions tab: width of the Version column (design D1)
 )
 
 func (m Model) View() string {
@@ -201,7 +203,7 @@ func (m Model) screenHints() string {
 	case TabInfo:
 		return "[esc] back   [v] versions   [C] readme"
 	case TabVersions:
-		return "[enter] pin version   [j/k] move   [esc] back"
+		return "[enter] pin version   [j/k] move   [g/G] top/bottom   [esc] back"
 	case TabReadme:
 		return "[j/k] scroll   [g/G] top/bottom   [q/esc] back"
 	case TabHelp:
@@ -581,8 +583,11 @@ func sortedDeps(deps map[string]string) []depPair {
 	return out
 }
 
-// versionsBody renders the published-version list; the installed version gets
-// a "*" marker and the latest dist-tag is labeled.
+// versionsBody renders the published-version list in the main-list column
+// layout (design D1): a two-character flag, the version, its size by
+// measured > registry unpacked > unknown precedence, and the where column
+// (headline environment plus +N presence counter, "-" when installed
+// nowhere). The visible slice follows the cursor through VerTop.
 func (m Model) versionsBody() string {
 	bodyH := m.height - 3
 	if bodyH < 1 {
@@ -600,30 +605,156 @@ func (m Model) versionsBody() string {
 		} else {
 			lines = append(lines, "loading…")
 		}
+		return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 	}
-	for i, v := range versions {
-		marker := "  "
-		if row := m.selectedInfoRow(); row != nil && v == row.InstalledVersion {
-			marker = "* "
-		}
-		extra := ""
-		if t.Doc != nil && v == t.Doc.Latest {
-			extra = "  (latest)"
-		}
-		line := fmt.Sprintf("%s%s%s", marker, v, extra)
+	whereW := m.width - colFlag - verColVersion - colSize
+	if whereW < 1 {
+		whereW = 1
+	}
+	lines = append(lines, headerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Left,
+		padRight("Flag", colFlag),
+		padRight("Version", verColVersion),
+		padRight("Size", colSize),
+		padRight("Where", whereW),
+	)))
+	h := m.versionContentH()
+	start := t.VerTop
+	if start > len(versions)-1 {
+		start = len(versions) - 1
+	}
+	end := start + h
+	if end > len(versions) {
+		end = len(versions)
+	}
+	for i := start; i < end; i++ {
+		r := m.versionRow(t, versions[i])
+		flagCell := padRight(string(r.state)+string(r.action), colFlag)
+		verCell := truncate(versions[i], verColVersion)
+		sizeCellS := padRight(sizeCell(r.size), colSize)
+		whereCell := padRight(fitText(r.where, whereW), whereW)
+		var line string
 		if i == t.VerCursor {
-			line = cursorStyle.Render(line)
+			line = lipgloss.JoinHorizontal(lipgloss.Left,
+				cursorFlagStyle.Render(flagCell),
+				cursorStyle.Render(verCell),
+				cursorStyle.Render(sizeCellS),
+				cursorStyle.Render(whereCell),
+			)
+		} else {
+			line = lipgloss.JoinHorizontal(lipgloss.Left,
+				flagStyle.Render(flagCell),
+				verCell,
+				sizeCellS,
+				whereCell,
+			)
 		}
 		lines = append(lines, line)
 	}
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func (m Model) selectedInfoRow() *domain.PkgState {
-	if ps := m.state.Active(); ps != nil {
-		return ps.Packages[m.activeTab().Name]
+// versionRow derives the flag, size and where cells of one published version
+// (design D1/D2): state i/p by presence in any environment of the active
+// manager; the pending mark's action char on the row matching its effective
+// target (pinned version, latest dist-tag for unversioned install/upgrade,
+// the active environment's installed version for removals); size by measured
+// disk > registry unpacked > unknown precedence; where = highest-ranked
+// carrying environment plus a +N presence counter.
+func (m Model) versionRow(t *Tab, v string) versionRow {
+	ranks := map[string]string{}
+	for _, e := range m.envs() {
+		ranks[e.ID] = e.Rank
 	}
-	return nil
+	var carriers []ecosystem.Environment
+	for _, e := range m.envs() {
+		ps := m.state.Prefixes[e.ID]
+		if ps == nil || !ps.Loaded {
+			continue
+		}
+		p := ps.Packages[t.Name]
+		if p != nil && p.Installed() && p.InstalledVersion == v {
+			carriers = append(carriers, e)
+		}
+	}
+	sort.SliceStable(carriers, func(i, j int) bool {
+		r1, r2 := ranks[carriers[i].ID], ranks[carriers[j].ID]
+		switch {
+		case r1 == r2:
+			return carriers[i].ID < carriers[j].ID
+		case r1 == "":
+			return false
+		case r2 == "":
+			return true
+		default:
+			return domain.CompareVersions(r1, r2) > 0
+		}
+	})
+
+	row := versionRow{state: 'p', action: '*', where: "-"}
+	if len(carriers) > 0 {
+		row.state = 'i'
+		tag := m.activeManagerID
+		if !m.isProject() {
+			tag = carriers[0].Rank
+			if tag == "" {
+				tag = displayPath(carriers[0].ID)
+			}
+		}
+		if len(carriers) > 1 {
+			tag += fmt.Sprintf("+%d", len(carriers)-1)
+		}
+		row.where = tag
+		for _, e := range carriers {
+			if ps := m.state.Prefixes[e.ID]; ps != nil {
+				if p := ps.Packages[t.Name]; p != nil && p.SizeBytes != nil {
+					row.size = p.SizeBytes
+					break
+				}
+			}
+		}
+	}
+	if row.size == nil && t.Doc != nil {
+		if b, ok := t.Doc.UnpackedSizes[v]; ok && b > 0 {
+			b := b
+			row.size = &b
+		}
+	}
+	if ps := m.state.Active(); ps != nil {
+		if p := ps.Packages[t.Name]; p != nil {
+			mk := p.MarkFor(m.activeManagerID)
+			var target string
+			switch mk {
+			case domain.MarkInstall, domain.MarkUpgrade:
+				target = p.TargetVersionFor(m.activeManagerID)
+				if target == "" && t.Doc != nil {
+					target = t.Doc.Latest
+				}
+			case domain.MarkRemove:
+				target = p.InstalledVersion
+			}
+			if target != "" && v == target {
+				row.action = p.ActionCharFor(m.activeManagerID)
+			}
+		}
+	}
+	return row
+}
+
+type versionRow struct {
+	state  rune // 'i' installed in >=1 environment, else 'p'
+	action rune // pending mark's action char on its target row, '*' elsewhere
+	size   *int64
+	where  string
+}
+
+// versionContentH is the number of data rows the versions list can show below
+// the header, its title line and the column header.
+func (m Model) versionContentH() int {
+	h := m.height - 3 - 3 // header(3) + title + blank + column header
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 // readmeContentH is the number of text lines the README body can show below
@@ -681,6 +812,7 @@ var helpSections = []helpSection{
 	{title: "List", rows: [][2]string{
 		{"j/k, arrows", "move cursor"},
 		{"enter / d", "package info screen"},
+		{"v", "published versions of the highlighted package (enter pins one)"},
 		{"g", "open the plan preview (press g again there to apply)"},
 		{"S", "cycle sort: name, version, size, state"},
 		{"u", "refresh list and rescan environments"},

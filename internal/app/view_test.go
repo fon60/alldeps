@@ -135,11 +135,12 @@ func TestHelpScreenListsAllKeysAndReturns(t *testing.T) {
 		}
 	}
 
-	// The body is one line shorter than pre-tab-strip, so the search section
-	// sits just below the fold until scrolled.
+	// The body is a couple of lines shorter than pre-tab-strip, so the search
+	// section sits below the fold until scrolled.
+	m = m.step(t, keyMsg(t, "j"))
 	m = m.step(t, keyMsg(t, "j"))
 	if out := render80x24(m); !strings.Contains(out, "j loads more at the end") {
-		t.Errorf("help screen (scrolled one line) missing %q", "j loads more at the end")
+		t.Errorf("help screen (scrolled) missing %q", "j loads more at the end")
 	}
 
 	m = m.step(t, keyMsg(t, "G")) // scroll to the bottom sections

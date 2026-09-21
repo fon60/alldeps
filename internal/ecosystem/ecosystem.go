@@ -140,7 +140,8 @@ type Caps struct {
 }
 
 // Doc is the manager-agnostic package document shown on the info screen,
-// version history, and README view.
+// version history, and README view. UnpackedSizes maps a published version to
+// its registry-reported on-disk size in bytes (npm only; empty elsewhere).
 type Doc struct {
 	Name             string
 	Description      string
@@ -154,6 +155,7 @@ type Doc struct {
 	Versions         []string
 	Latest           string
 	Readme           string
+	UnpackedSizes    map[string]int64
 }
 
 // LockHandle is a held environment lock.

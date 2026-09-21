@@ -447,5 +447,6 @@ func toEcoDoc(d *registry.Doc) *ecosystem.Doc {
 		Versions:         d.Versions,
 		Latest:           d.Latest,
 		Readme:           d.Readme,
+		UnpackedSizes:    d.UnpackedSizes,
 	}
 }

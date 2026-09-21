@@ -1398,10 +1398,24 @@ func (m Model) openVersions() (Model, tea.Cmd) {
 	t.Name = it.Name
 	if it.Doc != nil && len(it.Doc.Versions) > 0 {
 		t.Doc = it.Doc
+		domain.SortVersions(t.Doc.Versions) // newest first regardless of source order (design D4)
 		m.positionVersionCursor(idx)
 		return m, nil
 	}
 	return m, m.versionsCmd(m.state.ActivePrefixID, it.Name)
+}
+
+// openVersionsByName opens (or focuses) the version-history tab for name from
+// a list-like tab and starts fetching its document on a freshly created tab;
+// an existing tab is only focused, never duplicated or re-fetched.
+func (m Model) openVersionsByName(name string) (Model, tea.Cmd) {
+	idx, created := m.openTab(TabVersions, name)
+	if !created {
+		return m, nil
+	}
+	t := &m.tabs[idx]
+	t.Name = name
+	return m, m.versionsCmd(m.state.ActivePrefixID, name)
 }
 
 // positionVersionCursor puts the cursor of a versions tab on the installed
@@ -1430,13 +1444,13 @@ func (m *Model) positionVersionCursor(idx int) {
 	m.syncVersionTop(idx)
 }
 
-// syncVersionTop keeps the versions cursor inside the visible viewport.
+// syncVersionTop keeps the versions cursor inside the visible viewport: the
+// list scrolls only when the cursor leaves the currently displayed range, in
+// either direction. Visible data rows exclude the title line and the column
+// header (the corrected package-list math, design D3).
 func (m *Model) syncVersionTop(idx int) {
 	t := &m.tabs[idx]
-	h := m.height - 3 - 2 // header(3) + title + blank
-	if h < 1 {
-		h = 1
-	}
+	h := m.versionContentH()
 	n := 0
 	if t.Doc != nil {
 		n = len(t.Doc.Versions)
