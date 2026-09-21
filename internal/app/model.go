@@ -22,20 +22,77 @@ import (
 // Version is the application version shown in the header.
 var Version = "0.1.0"
 
-type Screen int
+// TabKind classifies the persistent context screens that occupy tabs in the
+// strip (design D1/D2). The root tab is always a List.
+type TabKind int
 
 const (
-	ScreenList Screen = iota
-	ScreenPicker
-	ScreenManager
-	ScreenTargets
-	ScreenPlan
-	ScreenInfo
-	ScreenVersions
-	ScreenReadme
-	ScreenHelp
-	ScreenResolver
+	TabList TabKind = iota
+	TabSearch
+	TabInfo
+	TabVersions
+	TabReadme
+	TabResolver
+	TabHelp
+	TabPlan
 )
+
+// Overlay classifies the transient popups that block the active tab without
+// appearing in the strip (design D1).
+type Overlay int
+
+const (
+	OverlayNone Overlay = iota
+	OverlayPicker
+	OverlayManager
+	OverlayTargets
+)
+
+// Tab is one open context: its kind, subject identity (Search: query;
+// Info/Versions/Readme/Resolver: package name; Help/Plan: none) and all the
+// per-kind state, so returning to a tab restores it exactly.
+type Tab struct {
+	Kind    TabKind
+	Subject string
+
+	// List & Search share the list viewport state.
+	Cursor  int
+	ListTop int
+
+	// Search: results of Subject, loaded in pages.
+	Query   string
+	Hits    map[string]bool
+	Order   []string
+	Total   int
+	Fetched int
+	Loading bool
+
+	// Info.
+	Name       string
+	Doc        *ecosystem.Doc
+	Local      bool
+	Err        string
+	DestCursor int
+
+	// Versions.
+	VerCursor int
+	VerTop    int
+
+	// Readme.
+	ReadmeLines  []string
+	ReadmeScroll int
+
+	// Resolver: the conflicted cell and the cursor over its flat option list.
+	RDest   string
+	RName   string
+	RCursor int
+
+	// Help.
+	HelpScroll int
+
+	// Plan: the Yes/No conflict gate popup is up on the plan tab.
+	Gate bool
+}
 
 type PromptKind int
 
@@ -66,13 +123,12 @@ type Model struct {
 	applicable      []string // project mode: applicable manager ids, stable order
 	managers        map[string]ecosystem.Ecosystem
 	activeManagerID string
-	screen          Screen
-	helpFrom        Screen // screen to return to when the help screen closes
+	tabs            []Tab // open contexts; invariant: tabs[0].Kind == TabList, never removed
+	tabIdx          int   // index of the active tab
+	overlay         Overlay
 	width           int
 	height          int
 	hostname        string
-	cursor          int
-	listTop         int // first visible row index of the list viewport
 	notice          string
 	filterPred      filter.Predicate
 	prompt          *promptState
@@ -80,31 +136,13 @@ type Model struct {
 	pickerLocked    map[string]bool // env IDs held by another live instance
 	activeFallback  string          // last resolved active environment (for vanished-prefix fallback)
 
-	// searchActive is true while a registry search result set is on display;
-	// the list then shows only those results (plus installed rows that match).
-	// Results load in pages: reaching the end of the loaded rows fetches the
-	// next page (infinite scroll), up to searchTotal.
-	searchActive  bool
-	searchQuery   string
-	searchNames   map[string]bool
-	searchOrder   []string // search rows of the current query, in registry order
-	searchTotal   int      // total matches reported by the registry
-	searchFetched int      // hits consumed for the current query (next page offset)
-	searchLoading bool     // a page fetch is in flight
-
 	locks *lock.Manager
 
 	envsByManager map[string][]ecosystem.Environment // discovered destinations per manager
-	managerCursor int                                // cursor on the manager switcher screen
+	managerCursor int                                // cursor on the manager switcher overlay
 
-	planSizes     map[string]int64 // name -> unpacked size shown in the plan screen
-	planGate      bool             // the Yes/No conflict popup is up on the plan screen
-	resolvedSig   string           // plan signature the conflict state was last resolved for
-
-	resolverDest    string // destination of the cell on the resolver screen
-	resolverName    string // package on the resolver screen
-	resolverFrom    Screen // screen to return to when the resolver closes
-	resolverCursor  int    // cursor over the flat option list of the resolver
+	planSizes   map[string]int64 // name -> unpacked size shown in the plan tab
+	resolvedSig string           // plan signature the conflict state was last resolved for
 
 	applyBatches  []applyBatch     // queued (destination, manager) batches for the running apply
 	applyBatchIdx int
@@ -112,6 +150,7 @@ type Model struct {
 	applyLocks    []string          // destinations locked at apply start, released after it
 	applyFrom     map[string]string // dest+\x00+name -> installed version at apply start
 	applyFailed   int
+	applyFromTab  int                // active tab when the run started; dismissed enter returns there
 	applyDone     bool               // completion prompt is showing
 	applyLog      []string           // raw manager output lines shown on the apply screen
 	applyCurrent  string             // command currently running (bottom line while applying)
@@ -122,17 +161,6 @@ type Model struct {
 	installTargets      []ecosystem.Environment // eligible destinations in the popup
 	installTargetCursor int
 	installTargetSel    map[string]bool // destination IDs preselected/selected in the popup
-
-	infoName       string // package the info screen shows
-	infoDoc        *ecosystem.Doc
-	infoLocal      bool   // doc came from the local package.json (offline)
-	infoErr        string // set when metadata could not be fetched/read
-	infoDestCursor int    // cursor on the info screen's per-destination table
-	verCursor      int
-	readmeLines    []string
-	readmeScroll   int
-
-	helpScroll int // scroll position on the help screen
 
 	quitConfirm bool // quit confirmation prompt is showing
 }
@@ -149,6 +177,7 @@ func New(eco ecosystem.Ecosystem) Model {
 		mode:            ModeGlobal,
 		managers:        map[string]ecosystem.Ecosystem{eco.ID(): eco},
 		activeManagerID: eco.ID(),
+		tabs:            []Tab{{Kind: TabList}},
 		envsByManager:   map[string][]ecosystem.Environment{},
 		locks:           lock.NewDefault(),
 		hostname:        host,
@@ -179,6 +208,7 @@ func NewProject(root string, managers map[string]ecosystem.Ecosystem, applicable
 		projectRoot:   root,
 		applicable:    applicable,
 		managers:      managers,
+		tabs:          []Tab{{Kind: TabList}},
 		envsByManager: map[string][]ecosystem.Environment{},
 		locks:         lock.NewDefault(),
 		hostname:      host,
@@ -218,32 +248,136 @@ func (m Model) managerIDs() []string {
 	return ids
 }
 
-// resetSearch clears the transient search-result view (marks are untouched;
-// they live in their own PrefixState rows).
-func (m *Model) resetSearch() {
-	m.searchActive = false
-	m.searchQuery = ""
-	m.searchNames = nil
-	m.searchOrder = nil
-	m.searchTotal = 0
-	m.searchFetched = 0
-	m.searchLoading = false
+// findTab returns the index of the first tab with the given kind and subject,
+// or -1. Subject identity (design D3): Search matches by query,
+// Info/Versions/Readme/Resolver by package name, Help and Plan are singletons.
+func (m Model) findTab(kind TabKind, subject string) int {
+	for i, t := range m.tabs {
+		if t.Kind == kind && t.Subject == subject {
+			return i
+		}
+	}
+	return -1
 }
 
-// hasMoreSearch reports whether the active search still has pages to load.
+// openTab focuses an existing (kind, subject) tab anywhere in the strip; when
+// none exists it appends a new one at the end and activates it. The second
+// result reports whether a tab was created.
+func (m *Model) openTab(kind TabKind, subject string) (int, bool) {
+	if i := m.findTab(kind, subject); i >= 0 {
+		m.tabIdx = i
+		return i, false
+	}
+	m.tabs = append(m.tabs, Tab{Kind: kind, Subject: subject})
+	m.tabIdx = len(m.tabs) - 1
+	return m.tabIdx, true
+}
+
+// closeActiveTab removes the active tab (the root List tab is uncloseable) and
+// activates its left neighbor. Closing a Search tab discards its unmarked
+// result rows; landing on the Plan tab re-arms its conflict gate.
+func (m *Model) closeActiveTab() {
+	i := m.tabIdx
+	if i == 0 {
+		return
+	}
+	if m.tabs[i].Kind == TabSearch {
+		m.discardSearchRows(i)
+	}
+	m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+	m.tabIdx = i - 1
+	if m.tabs[m.tabIdx].Kind == TabPlan {
+		m.tabs[m.tabIdx].Gate = m.planHasConflicts()
+	}
+}
+
+// moveTab moves the active tab by delta, inert at the strip edges.
+func (m *Model) moveTab(delta int) {
+	n := m.tabIdx + delta
+	if n < 0 || n >= len(m.tabs) {
+		return
+	}
+	m.tabIdx = n
+}
+
+// closeSearchTabs removes every open Search tab, discarding each one's
+// unmarked result rows (marks survive in their PrefixState rows).
+func (m *Model) closeSearchTabs() {
+	for i := len(m.tabs) - 1; i > 0; i-- {
+		if m.tabs[i].Kind != TabSearch {
+			continue
+		}
+		m.discardSearchRows(i)
+		m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+		if m.tabIdx >= i {
+			m.tabIdx--
+		}
+	}
+}
+
+// discardSearchRows removes the unmarked search-origin rows owned by tab idx
+// (in its result order) plus any orphaned unmarked search rows no other open
+// search tab references. Marked and installed rows are untouched.
+func (m *Model) discardSearchRows(idx int) {
+	t := m.tabs[idx]
+	other := map[string]bool{}
+	for i, o := range m.tabs {
+		if i == idx || o.Kind != TabSearch {
+			continue
+		}
+		for _, n := range o.Order {
+			other[n] = true
+		}
+	}
+	ps := m.state.Active()
+	if ps == nil {
+		return
+	}
+	for name, p := range ps.Packages {
+		if p.Origin != domain.OriginSearch || p.HasMarks() {
+			continue
+		}
+		owned := false
+		for _, n := range t.Order {
+			if n == name {
+				owned = true
+				break
+			}
+		}
+		if owned || !other[name] {
+			delete(ps.Packages, name)
+		}
+	}
+}
+
+// activeTab is the currently focused tab.
+func (m Model) activeTab() Tab { return m.tabs[m.tabIdx] }
+
+// listTab is the active tab when it is list-like (List or Search), else nil.
+func (m Model) listTab() *Tab {
+	t := &m.tabs[m.tabIdx]
+	if t.Kind == TabList || t.Kind == TabSearch {
+		return t
+	}
+	return nil
+}
+
+// hasMoreSearch reports whether the active search tab still has pages to load.
 func (m Model) hasMoreSearch() bool {
-	return m.searchActive && !m.searchLoading && m.searchTotal > 0 && m.searchFetched < m.searchTotal
+	t := m.activeTab()
+	return t.Kind == TabSearch && !t.Loading && t.Total > 0 && t.Fetched < t.Total
 }
 
-// loadMoreSearchCmd fetches the next page of the active search results.
+// loadMoreSearchCmd fetches the next page of the active search tab's results.
 func (m *Model) loadMoreSearchCmd() tea.Cmd {
 	ps := m.state.Active()
 	if ps == nil || !m.hasMoreSearch() {
 		return nil
 	}
-	from := m.searchFetched
-	m.searchLoading = true
-	return m.searchCmd(ps.ID, m.searchQuery, from)
+	t := &m.tabs[m.tabIdx]
+	from := t.Fetched
+	t.Loading = true
+	return m.searchCmd(ps.ID, t.Query, from)
 }
 
 // heldNotice renders the refusal message identifying a live lock holder.
@@ -371,35 +505,36 @@ func toPkgStates(pkgs []ecosystem.Package) map[string]*domain.PkgState {
 }
 
 // applySearchResults merges one page of search hits into the active prefix's
-// list and switches the view to search mode: installed rows are never
+// list on the Search tab identified by query: installed rows are never
 // duplicated or modified (they stay authoritative); previously displayed
 // search rows without a pending mark are replaced by the first page, while
-// later pages only add; marked search rows are retained regardless. While
-// active, visibleRows shows only these results.
+// later pages only add; marked search rows are retained regardless. While the
+// tab is active, visibleRows shows only its results.
 func (m *Model) applySearchResults(prefixID string, query string, from int, hits []ecosystem.Hit, total int) {
+	idx := m.findTab(TabSearch, query)
+	if idx < 0 {
+		return // stale: the search tab was closed or re-queried
+	}
+	t := &m.tabs[idx]
 	ps := m.state.Prefixes[prefixID]
 	if ps == nil {
 		return
 	}
 	if from == 0 {
-		for name, p := range ps.Packages {
-			if p.Origin == domain.OriginSearch && !p.HasMarks() {
-				delete(ps.Packages, name)
-			}
-		}
-		m.searchFetched = 0
-		m.searchNames = make(map[string]bool, len(hits))
-		m.searchOrder = nil
+		m.discardSearchRows(idx)
+		t.Fetched = 0
+		t.Hits = make(map[string]bool, len(hits))
+		t.Order = nil
 	}
-	ordered := make(map[string]bool, len(m.searchOrder))
-	for _, n := range m.searchOrder {
+	ordered := make(map[string]bool, len(t.Order))
+	for _, n := range t.Order {
 		ordered[n] = true
 	}
 	for _, h := range hits {
-		m.searchNames[h.Name] = true
+		t.Hits[h.Name] = true
 		if p, ok := ps.Packages[h.Name]; ok {
 			if p.Origin == domain.OriginSearch && !ordered[h.Name] {
-				m.searchOrder = append(m.searchOrder, h.Name) // marked leftover at its registry rank
+				t.Order = append(t.Order, h.Name) // marked leftover at its registry rank
 				ordered[h.Name] = true
 			}
 			continue // installed row stays authoritative; marked search row retained
@@ -410,30 +545,15 @@ func (m *Model) applySearchResults(prefixID string, query string, from int, hits
 			Description:   h.Description,
 			Origin:        domain.OriginSearch,
 		}
-		m.searchOrder = append(m.searchOrder, h.Name)
+		t.Order = append(t.Order, h.Name)
 		ordered[h.Name] = true
 	}
-	m.searchActive = true
-	m.searchQuery = query
-	m.searchFetched += len(hits)
+	t.Query = query
+	t.Fetched += len(hits)
 	if total > 0 {
-		m.searchTotal = total
+		t.Total = total
 	}
-	m.searchLoading = false
-}
-
-// clearSearch leaves search mode and drops the unmarked search rows so the
-// list returns to exactly the installed set (marked rows survive).
-func (m *Model) clearSearch() {
-	if ps := m.state.Active(); ps != nil {
-		for name, p := range ps.Packages {
-			if p.Origin == domain.OriginSearch && !p.HasMarks() {
-				delete(ps.Packages, name)
-			}
-		}
-	}
-	m.resetSearch()
-	m.clampCursor()
+	t.Loading = false
 }
 
 // checkOutdatedCmd fetches latest versions in the background (never blocks
@@ -474,9 +594,10 @@ func (m *Model) switchEnv(id string) tea.Cmd {
 	if _, ok := m.state.Prefixes[id]; !ok {
 		m.state.Prefixes[id] = &domain.PrefixState{ID: id, Packages: map[string]*domain.PkgState{}}
 	}
-	m.cursor = 0
+	m.tabs[0].Cursor = 0
+	m.tabs[0].ListTop = 0
 	m.notice = ""
-	m.resetSearch()
+	m.closeSearchTabs() // results referenced the previous environment's rows
 	ps := m.state.Prefixes[id]
 	if ps.Loaded {
 		return nil
@@ -1124,21 +1245,21 @@ func (m Model) managerForDest(dest string) string {
 	return m.activeManagerID
 }
 
-// openResolver shows the per-package resolution screen for one cell.
-func (m Model) openResolver(dest, name string, from Screen) (Model, tea.Cmd) {
-	m.screen = ScreenResolver
-	m.resolverDest = dest
-	m.resolverName = name
-	m.resolverFrom = from
-	m.resolverCursor = 0
+// openResolver opens (or focuses) the resolver tab for one conflicted cell.
+func (m Model) openResolver(dest, name string) (Model, tea.Cmd) {
+	idx, _ := m.openTab(TabResolver, name)
+	t := &m.tabs[idx]
+	t.RDest = dest
+	t.RName = name
+	t.RCursor = 0
 	return m, nil
 }
 
-// resolverOptionRows is the flat option list of the resolver screen: one
-// entry per option of each conflict of the cell.
-func (m Model) resolverOptionRows() []ecosystem.ResolutionOption {
+// resolverOptionRows is the flat option list of a resolver tab: one entry per
+// option of each conflict of the cell.
+func (m Model) resolverOptionRows(t *Tab) []ecosystem.ResolutionOption {
 	var out []ecosystem.ResolutionOption
-	for _, cf := range m.conflictsForCell(m.resolverDest, m.resolverName) {
+	for _, cf := range m.conflictsForCell(t.RDest, t.RName) {
 		out = append(out, cf.Options...)
 	}
 	return out
@@ -1147,13 +1268,18 @@ func (m Model) resolverOptionRows() []ecosystem.ResolutionOption {
 // applyResolutionOption applies the chosen option's effect to the marks and
 // records the pick on every cell involved in the conflict.
 func (m *Model) applyResolutionOption(opt ecosystem.ResolutionOption) {
+	var rdest, rname string
+	if m.tabs[m.tabIdx].Kind == TabResolver {
+		rdest = m.tabs[m.tabIdx].RDest
+		rname = m.tabs[m.tabIdx].RName
+	}
 	name := opt.Effect.Name
 	if name == "" {
-		name = m.resolverName
+		name = rname
 	}
 	dests := opt.Effect.Destinations
 	if len(dests) == 0 {
-		dests = []string{m.resolverDest}
+		dests = []string{rdest}
 	}
 	mgrOf := func(d string) string { return m.managerForDest(d) }
 	switch opt.Effect.Kind {
@@ -1196,35 +1322,29 @@ func (m *Model) applyResolutionOption(opt ecosystem.ResolutionOption) {
 	m.afterResolutionChoice()
 }
 
-// afterResolutionChoice keeps the resolver open while the same cell is still
-// conflicted, walks to the next conflicted plan cell when opened from the
-// gate, and otherwise returns to the opening screen (re-evaluating the gate).
+// afterResolutionChoice keeps the resolver tab open while the same cell is
+// still conflicted and otherwise closes it (the left neighbor — re-arming the
+// plan gate when it is the plan — becomes active).
 func (m *Model) afterResolutionChoice() {
-	if m.cellConflicted(m.resolverDest, m.resolverName) {
-		m.resolverCursor = 0
+	if m.tabs[m.tabIdx].Kind != TabResolver {
 		return
 	}
-	if m.resolverFrom == ScreenPlan {
-		if dest, name := m.nextConflictCell(); dest != "" {
-			m.resolverDest = dest
-			m.resolverName = name
-			m.resolverCursor = 0
-			return
-		}
+	t := &m.tabs[m.tabIdx]
+	if m.cellConflicted(t.RDest, t.RName) {
+		t.RCursor = 0
+		return
 	}
-	m.screen = m.resolverFrom
-	if m.screen == ScreenPlan {
-		m.planGate = m.planHasConflicts()
-	}
+	m.closeActiveTab()
 }
 
-// openPlan shows the plan preview and starts fetching install sizes. When a
-// pending operation touches an unresolved conflict, the Yes/No gate popup is
-// raised on top of the plan (spec: plan gate).
+// openPlan opens (or focuses) the plan tab and starts fetching install sizes.
+// When a pending operation touches an unresolved conflict, the Yes/No gate
+// popup is raised on top of the plan (spec: plan gate). The plan renders live
+// from current marks whenever it is shown.
 func (m Model) openPlan() (Model, tea.Cmd) {
-	m.screen = ScreenPlan
+	idx, _ := m.openTab(TabPlan, "")
+	m.tabs[idx].Gate = m.planHasConflicts()
 	m.planSizes = map[string]int64{}
-	m.planGate = m.planHasConflicts()
 	var cmds []tea.Cmd
 	for _, g := range m.planGroups() {
 		for _, p := range g.installs {
@@ -1237,83 +1357,122 @@ func (m Model) openPlan() (Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// openInfo shows the info screen for the selected row and starts loading its
-// metadata (local package.json when installed, registry document otherwise).
-// The per-destination table cursor starts on the headline destination.
+// openInfo opens (or focuses) the info tab for the selected row and starts
+// loading its metadata on a freshly created tab (local package.json when
+// installed, registry document otherwise). The per-destination table cursor
+// starts on the headline destination. An existing tab keeps its loaded state.
 func (m Model) openInfo() (Model, tea.Cmd) {
 	u := m.selectedUnified()
 	if u == nil {
 		return m, nil
 	}
-	m.screen = ScreenInfo
-	m.infoName = u.Name
-	m.infoDoc = nil
-	m.infoLocal = false
-	m.infoErr = ""
+	idx, created := m.openTab(TabInfo, u.Name)
+	if !created {
+		return m, nil
+	}
+	t := &m.tabs[idx]
+	t.Name = u.Name
 	envID := m.state.ActivePrefixID
 	if u.HeadlineID != "" {
 		envID = u.HeadlineID
 	}
-	m.infoDestCursor = 0
 	for i, e := range m.envs() {
 		if e.ID == envID {
-			m.infoDestCursor = i
+			t.DestCursor = i
 			break
 		}
 	}
 	return m, m.infoCmd(envID, u.Name, u.Installed())
 }
 
-// openVersions shows the version history; when the current doc carries no
-// version list (local doc of an installed package) it fetches the registry
-// document first.
+// openVersions opens (or focuses) the version-history tab for the info
+// package; when the info doc carries no version list (local doc of an
+// installed package) it fetches the registry document first.
 func (m Model) openVersions() (Model, tea.Cmd) {
-	if m.infoDoc != nil && len(m.infoDoc.Versions) > 0 {
-		m.screen = ScreenVersions
-		m.positionVersionCursor()
+	it := m.activeTab()
+	idx, created := m.openTab(TabVersions, it.Name)
+	if !created {
 		return m, nil
 	}
-	m.screen = ScreenVersions
-	return m, m.versionsCmd(m.state.ActivePrefixID, m.infoName)
+	t := &m.tabs[idx]
+	t.Name = it.Name
+	if it.Doc != nil && len(it.Doc.Versions) > 0 {
+		t.Doc = it.Doc
+		m.positionVersionCursor(idx)
+		return m, nil
+	}
+	return m, m.versionsCmd(m.state.ActivePrefixID, it.Name)
 }
 
-// positionVersionCursor puts the cursor on the installed version, else the
-// latest, else the first entry.
-func (m *Model) positionVersionCursor() {
-	if m.infoDoc == nil || len(m.infoDoc.Versions) == 0 {
-		m.verCursor = 0
+// positionVersionCursor puts the cursor of a versions tab on the installed
+// version, else the latest, else the first entry.
+func (m *Model) positionVersionCursor(idx int) {
+	t := &m.tabs[idx]
+	if t.Doc == nil || len(t.Doc.Versions) == 0 {
+		t.VerCursor = 0
 		return
 	}
 	prefer := ""
 	if ps := m.state.Active(); ps != nil {
-		if p := ps.Packages[m.infoName]; p != nil && p.InstalledVersion != "" {
+		if p := ps.Packages[t.Name]; p != nil && p.InstalledVersion != "" {
 			prefer = p.InstalledVersion
 		}
 	}
 	if prefer == "" {
-		prefer = m.infoDoc.Latest
+		prefer = t.Doc.Latest
 	}
-	for i, v := range m.infoDoc.Versions {
+	for i, v := range t.Doc.Versions {
 		if v == prefer {
-			m.verCursor = i
-			return
+			t.VerCursor = i
+			break
 		}
 	}
-	m.verCursor = 0
+	m.syncVersionTop(idx)
 }
 
-// pinVersion marks the package for install/upgrade at exactly the selected
-// version (spec: version history).
+// syncVersionTop keeps the versions cursor inside the visible viewport.
+func (m *Model) syncVersionTop(idx int) {
+	t := &m.tabs[idx]
+	h := m.height - 3 - 2 // header(3) + title + blank
+	if h < 1 {
+		h = 1
+	}
+	n := 0
+	if t.Doc != nil {
+		n = len(t.Doc.Versions)
+	}
+	maxTop := n - h
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if t.VerCursor < t.VerTop {
+		t.VerTop = t.VerCursor
+	}
+	if t.VerCursor >= t.VerTop+h {
+		t.VerTop = t.VerCursor - h + 1
+	}
+	if t.VerTop > maxTop {
+		t.VerTop = maxTop
+	}
+	if t.VerTop < 0 {
+		t.VerTop = 0
+	}
+}
+
+// pinVersion marks the versions tab's package for install/upgrade at exactly
+// the selected version (spec: version history) and returns to the info tab of
+// the same package when one is open.
 func (m *Model) pinVersion() {
-	if m.infoDoc == nil || m.verCursor >= len(m.infoDoc.Versions) {
+	t := &m.tabs[m.tabIdx]
+	if t.Doc == nil || t.VerCursor >= len(t.Doc.Versions) {
 		return
 	}
-	v := m.infoDoc.Versions[m.verCursor]
+	v := t.Doc.Versions[t.VerCursor]
 	ps := m.state.Active()
 	if ps == nil {
 		return
 	}
-	p := ps.Packages[m.infoName]
+	p := ps.Packages[t.Name]
 	if p == nil {
 		return
 	}
@@ -1324,40 +1483,48 @@ func (m *Model) pinVersion() {
 		p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkInstall, TargetVersion: v})
 		m.notice = fmt.Sprintf("%s marked for install at %s", p.Name, v)
 	}
-	m.screen = ScreenInfo
+	if ii := m.findTab(TabInfo, t.Name); ii >= 0 {
+		m.tabIdx = ii
+	}
 }
 
-// openReadme shows the README view. Source priority (design D9): local README
-// file for installed packages, the already-loaded registry readme, then an
-// on-demand registry fetch; absent → a notice line.
+// openReadme opens (or focuses) the README tab. Source priority (design D9):
+// local README file for installed packages, the already-loaded registry
+// readme, then an on-demand registry fetch; absent → a notice line.
 func (m Model) openReadme() (Model, tea.Cmd) {
+	it := m.activeTab()
+	idx, created := m.openTab(TabReadme, it.Name)
+	if !created {
+		return m, nil
+	}
+	t := &m.tabs[idx]
+	t.Name = it.Name
 	var text string
 	found := false
 	if ps := m.state.Active(); ps != nil {
-		if p := ps.Packages[m.infoName]; p != nil && p.Installed() {
-			text, found = m.eco().Readme(ecosystem.Environment{ID: m.state.ActivePrefixID}, m.infoName)
+		if p := ps.Packages[it.Name]; p != nil && p.Installed() {
+			text, found = m.eco().Readme(ecosystem.Environment{ID: m.state.ActivePrefixID}, it.Name)
 		}
 	}
-	if !found && m.infoDoc != nil && m.infoDoc.Readme != "" {
-		text, found = m.infoDoc.Readme, true
+	if !found && it.Doc != nil && it.Doc.Readme != "" {
+		text, found = it.Doc.Readme, true
 	}
 	if found {
-		m.setReadme(text)
+		m.setReadmeLines(idx, text)
 		return m, nil
 	}
-	m.screen = ScreenReadme
-	m.readmeLines = []string{"loading…"}
-	return m, m.readmeFetchCmd(m.state.ActivePrefixID, m.infoName)
+	t.ReadmeLines = []string{"loading…"}
+	return m, m.readmeFetchCmd(m.state.ActivePrefixID, it.Name)
 }
 
-func (m *Model) setReadme(text string) {
+func (m *Model) setReadmeLines(idx int, text string) {
+	t := &m.tabs[idx]
 	if text == "" {
-		m.readmeLines = []string{"no README available"}
+		t.ReadmeLines = []string{"no README available"}
 	} else {
-		m.readmeLines = markdownToText(text)
+		t.ReadmeLines = markdownToText(text)
 	}
-	m.readmeScroll = 0
-	m.screen = ScreenReadme
+	t.ReadmeScroll = 0
 }
 
 // applyBatch is one queued invocation bound to its destination and the
@@ -1448,7 +1615,7 @@ func (m Model) startApply() (Model, tea.Cmd) {
 			m.notice = "no operation can run — every one is blocked by an unresolved conflict; resolve them (r on a marked row) and re-apply"
 			return m, nil
 		}
-		m.screen = ScreenList
+		m.closeActiveTab() // nothing to apply: leave the plan tab
 		return m, nil
 	}
 	var newly []string
@@ -1474,6 +1641,7 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	m.applyDests = dests
 	m.applyLocks = newly
 	m.applyFailed = 0
+	m.applyFromTab = m.tabIdx
 	m.applyDone = false
 	m.applyAborted = false
 	m.applyLog = nil
@@ -1496,8 +1664,9 @@ func (m Model) startApply() (Model, tea.Cmd) {
 			}
 		}
 	}
+	// The apply run is an exclusive overlay: the tab strip is untouched for
+	// its whole duration, so dismissing it returns to the opening tab.
 	cmd := m.nextBatchCmd()
-	m.screen = ScreenList
 	return m, cmd
 }
 
@@ -1709,17 +1878,22 @@ func (m *Model) applyLoaded(prefixID string, pkgs map[string]*domain.PkgState) {
 		ns.Chosen = old.Chosen
 	}
 	m.state.Prefixes[prefixID] = ns
-	if m.searchActive && prefixID == m.state.ActivePrefixID {
-		m.resetSearch() // the reload replaced the rows the search view referenced
+	if prefixID == m.state.ActivePrefixID {
+		m.closeSearchTabs() // the reload replaced the rows the search tabs referenced
 	}
 }
 
-// displayRows is what the list shows and the cursor moves over: one unified
-// row per package name across all destinations of the active manager, or the
-// registry-ordered search results while a search is active.
+// displayRows is what the active list-like tab shows and its cursor moves
+// over: one unified row per package name across all destinations of the
+// active manager, or the registry-ordered results of a Search tab.
 func (m Model) displayRows() []domain.UnifiedRow {
-	if m.searchActive {
-		return m.searchDisplayRows()
+	return m.tabRows(m.activeTab())
+}
+
+// tabRows is the displayed rows of one list-like tab.
+func (m Model) tabRows(t Tab) []domain.UnifiedRow {
+	if t.Kind == TabSearch {
+		return m.searchDisplayRows(t)
 	}
 	return m.unifiedDisplayRows()
 }
@@ -1776,18 +1950,18 @@ func (m Model) unifiedDisplayRows() []domain.UnifiedRow {
 	return rows
 }
 
-// searchDisplayRows keeps the registry result order of the active search;
-// each result is a unified row without cross-destination aggregation. Marked
+// searchDisplayRows keeps the registry result order of one Search tab; each
+// result is a unified row without cross-destination aggregation. Marked
 // leftovers from earlier queries and installed matches follow, name-sorted
 // for stability.
-func (m Model) searchDisplayRows() []domain.UnifiedRow {
+func (m Model) searchDisplayRows(t Tab) []domain.UnifiedRow {
 	ps := m.state.Active()
 	if ps == nil {
 		return nil
 	}
 	var rows []*domain.PkgState
-	seen := make(map[string]bool, len(m.searchOrder))
-	for _, name := range m.searchOrder {
+	seen := make(map[string]bool, len(t.Order))
+	for _, name := range t.Order {
 		if p := ps.Packages[name]; p != nil && p.Origin == domain.OriginSearch {
 			rows = append(rows, p)
 			seen[name] = true
@@ -1802,7 +1976,7 @@ func (m Model) searchDisplayRows() []domain.UnifiedRow {
 		switch {
 		case r.Origin == domain.OriginSearch:
 			leftovers = append(leftovers, r)
-		case r.Installed() && m.searchNames[r.Name]:
+		case r.Installed() && t.Hits[r.Name]:
 			installed = append(installed, r)
 		}
 	}
@@ -1834,13 +2008,18 @@ func (m Model) visibleRows() []*domain.PkgState {
 	return out
 }
 
-// selectedUnified returns the unified row under the cursor, or nil.
+// selectedUnified returns the unified row under the active tab's cursor, or
+// nil.
 func (m Model) selectedUnified() *domain.UnifiedRow {
-	rows := m.displayRows()
-	if m.cursor >= len(rows) {
+	t := m.listTab()
+	if t == nil {
 		return nil
 	}
-	return &rows[m.cursor]
+	rows := m.displayRows()
+	if t.Cursor >= len(rows) {
+		return nil
+	}
+	return &rows[t.Cursor]
 }
 
 // markInstallOrUpgrade is aptitude's `+` semantics on the unified list: a
@@ -1947,7 +2126,7 @@ func (m *Model) markInstallTargets(name string) {
 	m.installTargets = eligible
 	m.installTargetSel = sel
 	m.installTargetCursor = 0
-	m.screen = ScreenTargets
+	m.overlay = OverlayTargets
 }
 
 // setInstallMarkForDest records the active manager's install mark on name in
@@ -1974,33 +2153,33 @@ func (m *Model) setInstallMarkForDest(destID, name string) {
 
 // markDestInstall marks the info package for install on the destination under
 // the cursor of the per-destination table.
-func (m *Model) markDestInstall() {
+func (m *Model) markDestInstall(t *Tab) {
 	envs := m.envs()
-	if m.infoDestCursor >= len(envs) {
+	if t.DestCursor >= len(envs) {
 		return
 	}
-	m.setInstallMarkForDest(envs[m.infoDestCursor].ID, m.infoName)
+	m.setInstallMarkForDest(envs[t.DestCursor].ID, t.Name)
 }
 
 // markDestRemove marks the info package for removal from the destination
 // under the cursor of the per-destination table (toggle).
-func (m *Model) markDestRemove() {
+func (m *Model) markDestRemove(t *Tab) {
 	envs := m.envs()
-	if m.infoDestCursor >= len(envs) {
+	if t.DestCursor >= len(envs) {
 		return
 	}
-	e := envs[m.infoDestCursor]
+	e := envs[t.DestCursor]
 	ps := m.state.Prefixes[e.ID]
 	if ps == nil {
 		m.notice = "not installed on " + displayPath(e.ID)
 		return
 	}
-	p := ps.Packages[m.infoName]
+	p := ps.Packages[t.Name]
 	if p == nil || !p.Installed() {
 		m.notice = "not installed on " + displayPath(e.ID)
 		return
 	}
-	m.state.SetMark(e.ID, m.infoName, m.activeManagerID, domain.MarkRemove)
+	m.state.SetMark(e.ID, t.Name, m.activeManagerID, domain.MarkRemove)
 }
 
 // submitFilter parses the prompt expression; on failure the previous filter

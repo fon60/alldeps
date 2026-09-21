@@ -32,8 +32,8 @@ func TestStartupRefusesLockedDefault(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("no load command should start for a locked default environment")
 	}
-	if next.screen != ScreenPicker {
-		t.Fatalf("screen = %v, want picker", next.screen)
+	if next.overlay != OverlayPicker {
+		t.Fatalf("overlay = %v, want picker", next.overlay)
 	}
 	if !strings.Contains(next.notice, "another npmitude") {
 		t.Fatalf("notice = %q, want holder identification", next.notice)

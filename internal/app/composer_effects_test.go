@@ -128,8 +128,8 @@ func TestComposerEffectsFlowThroughResolverLoop(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m, _ := composerStubModel(t)
-			m, _ = m.openResolver("/p", "console", ScreenList)
-			m.resolverCursor = tt.cursor
+			m, _ = m.openResolver("/p", "console")
+			m.tabs[m.tabIdx].RCursor = tt.cursor
 
 			nextRaw, cmd := m.Update(keyMsg(t, "enter"))
 			m = nextRaw.(Model)

@@ -33,25 +33,26 @@ func TestInfoScreenInstalledUsesLocalDoc(t *testing.T) {
 	msg := cmd()
 	m = m.step(t, msg)
 
-	if m.screen != ScreenInfo {
-		t.Fatalf("screen = %v, want info", m.screen)
+	it := m.activeTab()
+	if it.Kind != TabInfo {
+		t.Fatalf("active tab = %v, want info", it.Kind)
 	}
-	if !m.infoLocal {
+	if !it.Local {
 		t.Fatal("installed package must use the local doc")
 	}
-	if m.infoDoc == nil || m.infoDoc.Description != "A test pkg" {
-		t.Fatalf("doc = %+v", m.infoDoc)
+	if it.Doc == nil || it.Doc.Description != "A test pkg" {
+		t.Fatalf("doc = %+v", it.Doc)
 	}
-	if m.infoDoc.Bin["foo"] != "cli.js" {
-		t.Fatalf("bin = %v (string form must be keyed by name)", m.infoDoc.Bin)
+	if it.Doc.Bin["foo"] != "cli.js" {
+		t.Fatalf("bin = %v (string form must be keyed by name)", it.Doc.Bin)
 	}
-	if m.infoDoc.Dependencies["bar"] != "^1.0.0" || m.infoDoc.PeerDependencies["baz"] != "*" {
+	if it.Doc.Dependencies["bar"] != "^1.0.0" || it.Doc.PeerDependencies["baz"] != "*" {
 		t.Fatal("dependency sections missing")
 	}
 
 	m = m.step(t, keyMsg(t, "esc"))
-	if m.screen != ScreenList {
-		t.Fatal("esc should return to the list")
+	if m.activeTab().Kind != TabList {
+		t.Fatal("esc should close the info tab and return to the list")
 	}
 }
 
@@ -65,13 +66,14 @@ func TestInfoScreenOfflineNotInstalledShowsNotice(t *testing.T) {
 	msg := cmd()
 	m2 = m2.step(t, msg)
 
-	if m2.screen != ScreenInfo {
-		t.Fatalf("screen = %v, want info", m2.screen)
+	it := m2.activeTab()
+	if it.Kind != TabInfo {
+		t.Fatalf("active tab = %v, want info", it.Kind)
 	}
-	if !strings.Contains(m2.infoErr, "unavailable") {
-		t.Fatalf("infoErr = %q, want an unavailability notice", m2.infoErr)
+	if !strings.Contains(it.Err, "unavailable") {
+		t.Fatalf("info err = %q, want an unavailability notice", it.Err)
 	}
-	if m2.infoDoc != nil {
+	if it.Doc != nil {
 		t.Fatal("no doc should be fabricated on fetch failure")
 	}
 }
@@ -81,24 +83,26 @@ func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 	m.state.Prefixes["/p"].Packages["beta"].InstalledVersion = ""
 	m.state.Prefixes["/p"].Packages["beta"].Origin = domain.OriginSearch
 
-	m.screen = ScreenInfo
-	m.infoName = "alpha"
-	m.infoDoc = &ecosystem.Doc{Name: "alpha", Versions: []string{"2.0.0", "1.5.0", "1.0.0"}, Latest: "2.0.0"}
-	m.screen = ScreenVersions
-	m.verCursor = 1 // 1.5.0
+	m.openTab(TabInfo, "alpha")
+	m.tabs[m.tabIdx].Doc = &ecosystem.Doc{Name: "alpha", Versions: []string{"2.0.0", "1.5.0", "1.0.0"}, Latest: "2.0.0"}
+	m.openTab(TabVersions, "alpha")
+	m.tabs[m.tabIdx].Name = "alpha"
+	m.tabs[m.tabIdx].Doc = &ecosystem.Doc{Versions: []string{"2.0.0", "1.5.0", "1.0.0"}}
+	m.tabs[m.tabIdx].VerCursor = 1 // 1.5.0
 
 	m = m.step(t, keyMsg(t, "enter"))
 	a := m.state.Prefixes["/p"].Packages["alpha"]
 	if a.MarkFor("stub") != domain.MarkUpgrade || a.TargetVersionFor("stub") != "1.5.0" {
 		t.Fatalf("installed pin: mark=%v target=%q", a.MarkFor("stub"), a.TargetVersionFor("stub"))
 	}
-	if m.screen != ScreenInfo {
-		t.Fatal("pin should return to the info screen")
+	if m.activeTab().Kind != TabInfo {
+		t.Fatal("pin should return to the info tab")
 	}
 
-	m.screen = ScreenVersions
-	m.infoName = "beta"
-	m.verCursor = 0 // 2.0.0
+	m.openTab(TabVersions, "beta")
+	m.tabs[m.tabIdx].Name = "beta"
+	m.tabs[m.tabIdx].Doc = &ecosystem.Doc{Versions: []string{"2.0.0", "1.5.0", "1.0.0"}}
+	m.tabs[m.tabIdx].VerCursor = 0 // 2.0.0
 	m = m.step(t, keyMsg(t, "enter"))
 	b := m.state.Prefixes["/p"].Packages["beta"]
 	if b.MarkFor("stub") != domain.MarkInstall || b.TargetVersionFor("stub") != "2.0.0" {
@@ -197,21 +201,21 @@ func TestReadmeViewLocalAndAbsent(t *testing.T) {
 	s.readmes = map[string]string{"foo": "# foo\nreadme body"}
 	m := modelWithLoadedPrefix(t, "/p", "foo")
 	m.managers["stub"] = s
-	m.screen = ScreenInfo
-	m.infoName = "foo"
+	m.openTab(TabInfo, "foo")
+	m.tabs[m.tabIdx].Name = "foo"
 
 	m = m.step(t, keyMsg(t, "C"))
-	if m.screen != ScreenReadme {
-		t.Fatalf("screen = %v, want readme", m.screen)
+	if m.activeTab().Kind != TabReadme {
+		t.Fatalf("active tab = %v, want readme", m.activeTab().Kind)
 	}
-	joined := strings.Join(m.readmeLines, "\n")
+	joined := strings.Join(m.activeTab().ReadmeLines, "\n")
 	if !strings.Contains(joined, "readme body") {
 		t.Fatalf("readme lines = %q", joined)
 	}
 
 	m2 := modelWithLoadedPrefix(t, "/p", "bar")
-	m2.screen = ScreenInfo
-	m2.infoName = "bar"
+	m2.openTab(TabInfo, "bar")
+	m2.tabs[m2.tabIdx].Name = "bar"
 	m2.state.Prefixes["/p"].Packages["bar"].InstalledVersion = ""
 	m2.state.Prefixes["/p"].Packages["bar"].Origin = domain.OriginSearch
 	// no registry configured -> the fetch fails with ErrNoRegistry and lands
@@ -222,7 +226,7 @@ func TestReadmeViewLocalAndAbsent(t *testing.T) {
 	}
 	m2 = nextRaw.(Model)
 	m2 = m2.step(t, cmd())
-	if !strings.Contains(strings.Join(m2.readmeLines, "\n"), "no README available") {
-		t.Fatalf("readme lines = %q, want absent notice", m2.readmeLines)
+	if !strings.Contains(strings.Join(m2.activeTab().ReadmeLines, "\n"), "no README available") {
+		t.Fatalf("readme lines = %q, want absent notice", m2.activeTab().ReadmeLines)
 	}
 }

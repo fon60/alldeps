@@ -27,8 +27,8 @@ func TestExactlyOneManagerActiveAndSwitching(t *testing.T) {
 	}
 
 	m = m.step(t, keyMsg(t, "M"))
-	if m.screen != ScreenManager {
-		t.Fatalf("screen = %v, want ScreenManager", m.screen)
+	if m.overlay != OverlayManager {
+		t.Fatalf("overlay = %v, want the manager switcher", m.overlay)
 	}
 	out := render80x24(m)
 	if strings.Count(out, "*") != 1 {
@@ -40,8 +40,8 @@ func TestExactlyOneManagerActiveAndSwitching(t *testing.T) {
 	if m.activeManagerID != "yarn" {
 		t.Fatalf("active manager after switch = %q, want yarn", m.activeManagerID)
 	}
-	if m.screen != ScreenList {
-		t.Fatalf("screen after select = %v, want list", m.screen)
+	if m.overlay != OverlayNone {
+		t.Fatalf("overlay after select = %v, want none (back to list)", m.overlay)
 	}
 
 	m = m.step(t, keyMsg(t, "M"))

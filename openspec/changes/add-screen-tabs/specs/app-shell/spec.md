@@ -15,6 +15,17 @@ Every screen SHALL display a three-line header at the top of the window: line 1 
 - **WHEN** the user opens the plan preview from the list
 - **THEN** line 1 is unchanged, line 2 lists the plan screen's actions (apply / cancel), and line 3 shows the Plan tab as active
 
+### Requirement: Help screen
+Pressing `?` on any tab SHALL open a help tab listing all key bindings grouped by context. Closing it with esc, q, or enter SHALL remove the tab and return to the previous tab. While a transient popup (environment picker, manager picker, install targets, quit confirmation) is open, pressing ? MUST do nothing; the user closes the popup first. On screens where the content exceeds the visible area, the help screen SHALL be scrollable.
+
+#### Scenario: Open and close help
+- **WHEN** the user presses `?` on the package list and then presses esc
+- **THEN** the help tab shows all key bindings grouped by context and closing it returns to the package list
+
+#### Scenario: Help from a sub-screen
+- **WHEN** the user opens the environment picker and presses ?
+- **THEN** nothing happens; after closing the picker with esc, pressing ? opens the help tab
+
 ## ADDED Requirements
 
 ### Requirement: Tab navigation

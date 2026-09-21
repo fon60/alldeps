@@ -15,6 +15,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
 	m.state.Prefixes["/p"].Packages["alpha"].LatestVersion = "1.0.0"
 
+	m.openTab(TabSearch, "alpha")
 	hits := []ecosystem.Hit{
 		{Name: "alpha", Version: "2.0.0", Description: "installed one"},
 		{Name: "brand-new", Version: "3.0.0", Description: "fresh"},
@@ -39,13 +40,15 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 	if fresh.LatestVersion != "3.0.0" || fresh.Description != "fresh" {
 		t.Fatalf("search row fields wrong: %+v", fresh)
 	}
-	if !m.searchActive || m.searchQuery != "alpha" || !m.searchNames["alpha"] || !m.searchNames["brand-new"] {
-		t.Fatalf("search view state wrong: active=%v query=%q names=%v", m.searchActive, m.searchQuery, m.searchNames)
+	st := m.activeTab()
+	if st.Kind != TabSearch || st.Query != "alpha" || !st.Hits["alpha"] || !st.Hits["brand-new"] {
+		t.Fatalf("search tab state wrong: kind=%v query=%q hits=%v", st.Kind, st.Query, st.Hits)
 	}
 }
 
 func TestSearchModeShowsOnlyResults(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
+	m.openTab(TabSearch, "gamma")
 	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
@@ -61,6 +64,7 @@ func TestSearchModeShowsOnlyResults(t *testing.T) {
 
 func TestSearchInstalledMatchShownAsInstalledRow(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "alpha")
 	hits := []ecosystem.Hit{
 		{Name: "alpha", Version: "9.9.9"},
 		{Name: "gamma", Version: "1.0.0"},
@@ -83,6 +87,7 @@ func TestSearchInstalledMatchShownAsInstalledRow(t *testing.T) {
 
 func TestClearSearchRestoresInstalledList(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
+	m.openTab(TabSearch, "gamma")
 	hits := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
@@ -90,17 +95,17 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 	m.state.SetMark("/p", "delta", "stub", domain.MarkInstall)
 
-	m.clearSearch()
+	m.closeActiveTab()
 
-	if m.searchActive || m.searchQuery != "" || m.searchNames != nil {
-		t.Fatal("search view state not reset")
+	if m.findTab(TabSearch, "gamma") >= 0 {
+		t.Fatal("search tab must be closed and its state dropped")
 	}
 	ps := m.state.Prefixes["/p"]
 	if _, ok := ps.Packages["gamma"]; ok {
-		t.Fatal("unmarked search row must be dropped on clear")
+		t.Fatal("unmarked search row must be dropped on close")
 	}
 	if d := ps.Packages["delta"]; d == nil || d .MarkFor("stub") != domain.MarkInstall {
-		t.Fatalf("marked search row must survive the clear: %+v", d)
+		t.Fatalf("marked search row must survive the close: %+v", d)
 	}
 	rows := m.visibleRows()
 	names := map[string]bool{}
@@ -114,24 +119,23 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 
 func TestEscKeyClearsSearch(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "gamma")
 	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
 	m = m.step(t, keyMsg(t, "esc"))
 
-	if m.searchActive {
-		t.Fatal("esc must clear the search view")
+	if m.findTab(TabSearch, "gamma") >= 0 {
+		t.Fatal("esc must close the search tab")
 	}
 	if _, ok := m.state.Prefixes["/p"].Packages["gamma"]; ok {
 		t.Fatal("unmarked search row still present after esc")
-	}
-	if m.notice == "" {
-		t.Fatal("expected a confirmation notice")
 	}
 }
 
 func TestLocalMatchRefusedDuringSearch(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "gamma")
 	hits := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "gamma", 0, hits, 0)
 
@@ -152,6 +156,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 	marked := &domain.PkgState{Name: "foo-marked", Origin: domain.OriginSearch, LatestVersion: "2.0.0", Marks: map[string]domain.MarkEntry{"stub": {Mark: domain.MarkInstall}}}
 	ps.Packages["foo-marked"] = marked
 
+	m.openTab(TabSearch, "bar")
 	hits := []ecosystem.Hit{{Name: "bar-new", Version: "9.0.0"}}
 	m.applySearchResults("/p", "bar", 0, hits, 0)
 
@@ -172,6 +177,7 @@ func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	m.state.FilterText = "~i"
 	before := len(m.state.Prefixes["/p"].Packages)
 
+	m.openTab(TabSearch, "x")
 	next, _ := m.Update(searchMsg{prefixID: "/p", query: "x", err: errors.New("network down")})
 	m = next.(Model)
 
@@ -191,6 +197,7 @@ func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 
 func TestSearchZeroMatchesNotices(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "zzz")
 	next, _ := m.Update(searchMsg{prefixID: "/p", query: "zzz", hits: nil})
 	m = next.(Model)
 	if m.notice == "" {
@@ -231,6 +238,7 @@ func TestSearchKeyRefusedWithoutHasSearch(t *testing.T) {
 
 func TestSearchPaginationLoadsNextPage(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "g")
 	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
@@ -240,8 +248,8 @@ func TestSearchPaginationLoadsNextPage(t *testing.T) {
 	if !m.hasMoreSearch() {
 		t.Fatal("expected more pages after the first (fetched 2 of 4)")
 	}
-	if m.searchTotal != 4 || m.searchFetched != 2 {
-		t.Fatalf("pagination state = %d/%d, want 2/4", m.searchFetched, m.searchTotal)
+	if m.activeTab().Total != 4 || m.activeTab().Fetched != 2 {
+		t.Fatalf("pagination state = %d/%d, want 2/4", m.activeTab().Fetched, m.activeTab().Total)
 	}
 
 	page2 := []ecosystem.Hit{
@@ -269,6 +277,7 @@ func TestSearchPaginationLoadsNextPage(t *testing.T) {
 
 func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "g")
 	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
@@ -276,11 +285,11 @@ func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 	m.applySearchResults("/p", "g", 0, page1, 4)
 
 	// Move the cursor to the last visible row.
-	for m.cursor < len(m.visibleRows())-1 {
+	for m.activeTab().Cursor < len(m.visibleRows())-1 {
 		m = m.step(t, keyMsg(t, "j"))
 	}
-	if m.cursor != len(m.visibleRows())-1 {
-		t.Fatalf("cursor = %d, want last row", m.cursor)
+	if m.activeTab().Cursor != len(m.visibleRows())-1 {
+		t.Fatalf("cursor = %d, want last row", m.activeTab().Cursor)
 	}
 
 	next, cmd := m.Update(keyMsg(t, "j"))
@@ -288,10 +297,10 @@ func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("j at the end of a paged search must start loading the next page")
 	}
-	if !m.searchLoading {
-		t.Fatal("searchLoading must be set while the page fetch is in flight")
+	if !m.activeTab().Loading {
+		t.Fatal("search tab Loading must be set while the page fetch is in flight")
 	}
-	if m.cursor != len(m.visibleRows())-1 {
+	if m.activeTab().Cursor != len(m.visibleRows())-1 {
 		t.Fatal("cursor must not move while waiting for the next page")
 	}
 
@@ -303,15 +312,16 @@ func TestSearchJAtEndTriggersNextPage(t *testing.T) {
 
 func TestSearchPageFailureKeepsLoadedResults(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "g")
 	page1 := []ecosystem.Hit{{Name: "gamma", Version: "1.0.0"}}
 	m.applySearchResults("/p", "g", 0, page1, 4)
-	m.searchLoading = true
+	m.tabs[m.tabIdx].Loading = true
 
 	next, _ := m.Update(searchMsg{prefixID: "/p", query: "g", from: 1, err: errors.New("network down")})
 	m = next.(Model)
 
-	if m.searchLoading {
-		t.Fatal("searchLoading must be cleared after a failed page fetch")
+	if m.activeTab().Loading {
+		t.Fatal("search tab Loading must be cleared after a failed page fetch")
 	}
 	if !m.hasMoreSearch() {
 		t.Fatal("user must be able to retry loading the next page")
@@ -326,6 +336,7 @@ func TestSearchPageFailureKeepsLoadedResults(t *testing.T) {
 
 func TestSearchStatusShowsLoadedOverTotal(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "g")
 	page1 := []ecosystem.Hit{
 		{Name: "gamma", Version: "1.0.0"},
 		{Name: "delta", Version: "2.0.0"},
@@ -339,6 +350,7 @@ func TestSearchStatusShowsLoadedOverTotal(t *testing.T) {
 
 func TestSearchResultsKeepRegistryOrder(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "q")
 	page1 := []ecosystem.Hit{
 		{Name: "zeta", Version: "1.0.0"},
 		{Name: "mid", Version: "2.0.0"},
@@ -373,13 +385,93 @@ func TestSearchResultsKeepRegistryOrder(t *testing.T) {
 
 func TestSearchStatusHidesLocalSort(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	m.openTab(TabSearch, "q")
 	m.applySearchResults("/p", "q", 0, []ecosystem.Hit{{Name: "zeta"}}, 1)
 	out := render80x24(m)
 	if strings.Contains(out, "sort:") {
 		t.Fatalf("status line must not show the local sort during a search:\n%s", out)
 	}
-	m.clearSearch()
+	m.closeActiveTab()
 	if out := render80x24(m); !strings.Contains(out, "sort:name") {
 		t.Fatalf("local sort must be shown again after clearing the search:\n%s", out)
+	}
+}
+
+func TestSearchRequeryInPlace(t *testing.T) {
+	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	ps := m.state.Prefixes["/p"]
+
+	// First query "foo" returns two results; mark one so it must survive.
+	m.openTab(TabSearch, "foo")
+	m.applySearchResults("/p", "foo", 0, []ecosystem.Hit{
+		{Name: "foo-a", Version: "1.0.0"},
+		{Name: "foo-b", Version: "2.0.0"},
+	}, 2)
+	m.state.SetMark("/p", "foo-b", "stub", domain.MarkInstall)
+
+	// Re-query in place with "bar": / on the active search tab, type, submit.
+	m = m.step(t, keyMsg(t, "/"))
+	if m.prompt == nil || m.prompt.kind != PromptSearch {
+		t.Fatal("the search prompt must open on an active search tab")
+	}
+	m = typeRunes(m, t, "bar")
+	nextRaw, cmd := m.Update(keyMsg(t, "enter"))
+	m = nextRaw.(Model)
+
+	if len(m.tabs) != 2 {
+		t.Fatalf("re-query must not open a new tab, tabs = %d", len(m.tabs))
+	}
+	st := m.activeTab()
+	if st.Kind != TabSearch || st.Query != "bar" || st.Subject != "bar" {
+		t.Fatalf("the same tab must be retargeted to bar: kind=%v query=%q subject=%q", st.Kind, st.Query, st.Subject)
+	}
+	if !st.Loading || cmd == nil {
+		t.Fatal("the re-query must start a fresh fetch from page 0")
+	}
+	if _, ok := ps.Packages["foo-a"]; ok {
+		t.Fatal("unmarked foo results must be cleared on re-query")
+	}
+	if fb := ps.Packages["foo-b"]; fb == nil || fb.MarkFor("stub") != domain.MarkInstall {
+		t.Fatalf("the marked foo result must survive the re-query: %+v", fb)
+	}
+
+	// The new page lands in the same tab.
+	m = m.step(t, searchMsg{prefixID: "/p", query: "bar", from: 0, hits: []ecosystem.Hit{{Name: "bar-1", Version: "3.0.0"}}, total: 1})
+	st = m.activeTab()
+	if st.Query != "bar" || !st.Hits["bar-1"] {
+		t.Fatalf("bar results must load into the same tab: query=%q hits=%v", st.Query, st.Hits)
+	}
+	names := map[string]bool{}
+	for _, r := range m.visibleRows() {
+		names[r.Name] = true
+	}
+	if !names["bar-1"] || names["foo-a"] {
+		t.Fatalf("the search tab must show the bar results, rows = %v", names)
+	}
+}
+
+func TestSearchQCloseDiscardsUnmarkedKeepsMarked(t *testing.T) {
+	m := modelWithLoadedPrefix(t, "/p", "alpha")
+	ps := m.state.Prefixes["/p"]
+	m.openTab(TabSearch, "gamma")
+	m.applySearchResults("/p", "gamma", 0, []ecosystem.Hit{
+		{Name: "gamma", Version: "1.0.0"},
+		{Name: "delta", Version: "2.0.0"},
+	}, 2)
+	m.state.SetMark("/p", "delta", "stub", domain.MarkInstall)
+
+	m = m.step(t, keyMsg(t, "q")) // q on a non-root tab closes it
+
+	if m.findTab(TabSearch, "gamma") >= 0 {
+		t.Fatal("q must close the search tab")
+	}
+	if m.activeTab().Kind != TabList {
+		t.Fatalf("closing the search tab must return to the list, active = %v", m.activeTab().Kind)
+	}
+	if _, ok := ps.Packages["gamma"]; ok {
+		t.Fatal("unmarked result must be discarded on close")
+	}
+	if d := ps.Packages["delta"]; d == nil || d.MarkFor("stub") != domain.MarkInstall {
+		t.Fatalf("marked result must survive the close: %+v", d)
 	}
 }

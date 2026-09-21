@@ -104,8 +104,8 @@ func TestConflictDoesNotBlockOtherOperations(t *testing.T) {
 	m := modelWithConflict(t)
 
 	m = m.step(t, keyMsg(t, "j")) // navigate past the conflicted row
-	if m.cursor != 1 {
-		t.Fatalf("cursor = %d, want 1 (navigation must work)", m.cursor)
+	if m.activeTab().Cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (navigation must work)", m.activeTab().Cursor)
 	}
 	m = m.step(t, keyMsg(t, "S")) // cycle sort
 	if m.state.SortKey != domain.SortVersion {
@@ -123,7 +123,7 @@ func TestConflictDoesNotBlockOtherOperations(t *testing.T) {
 	m = m.step(t, keyMsg(t, "enter")) // clear the filter
 
 	// mark another package normally
-	m.cursor = 0 // gamma (version sort puts it first)
+	m.tabs[0].Cursor = 0 // gamma (version sort puts it first)
 	m = m.step(t, keyMsg(t, "-"))
 	if got := m.state.Prefixes["/p"].Packages["gamma"].MarkFor("stub"); got != domain.MarkRemove {
 		t.Fatalf("gamma mark = %v, want MarkRemove (marking others must work)", got)
@@ -131,8 +131,8 @@ func TestConflictDoesNotBlockOtherOperations(t *testing.T) {
 	if !m.cellConflicted("/p", "beta") {
 		t.Fatal("the conflict must persist while other operations proceed")
 	}
-	if m.screen != ScreenList {
-		t.Fatalf("screen = %v, want list (nothing may force resolution on the user)", m.screen)
+	if m.activeTab().Kind != TabList {
+		t.Fatalf("active tab = %v, want list (nothing may force resolution on the user)", m.activeTab().Kind)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestResolverShowsOptionsConsequencesAndDeltas(t *testing.T) {
 	if dest != "/p" {
 		t.Fatalf("conflictDestFor(beta) = %q, want /p", dest)
 	}
-	m, _ = m.openResolver(dest, "beta", ScreenList)
+	m, _ = m.openResolver(dest, "beta")
 
 	out := render80x24(m)
 	for _, want := range []string{
@@ -208,7 +208,7 @@ func TestResolverChoiceUpdatesPlanAndReResolvesDependents(t *testing.T) {
 		t.Fatal("dependent gamma conflict missing after the initial resolve")
 	}
 
-	m, _ = m.openResolver("/p", "beta", ScreenList)
+	m, _ = m.openResolver("/p", "beta")
 	nextRaw, cmd := m.Update(keyMsg(t, "enter")) // apply the option under the cursor
 	m = nextRaw.(Model)
 
@@ -232,7 +232,7 @@ func TestResolverChoiceUpdatesPlanAndReResolvesDependents(t *testing.T) {
 func TestPlanGateYesOpensResolver(t *testing.T) {
 	m := modelWithConflict(t)
 	m, _ = m.openPlan()
-	if !m.planGate {
+	if !m.activeTab().Gate {
 		t.Fatal("the gate must be raised when the plan has unresolved conflicts")
 	}
 	out := render80x24(m)
@@ -241,14 +241,19 @@ func TestPlanGateYesOpensResolver(t *testing.T) {
 	}
 
 	m = m.step(t, keyMsg(t, "y"))
-	if m.screen != ScreenResolver {
-		t.Fatalf("screen after [Yes] = %v, want resolver", m.screen)
+	rt := m.activeTab()
+	if rt.Kind != TabResolver {
+		t.Fatalf("active tab after [Yes] = %v, want resolver", rt.Kind)
 	}
-	if m.resolverName != "beta" || m.resolverDest != "/p" {
-		t.Fatalf("resolver opened for %s/%s, want /p/beta", m.resolverDest, m.resolverName)
+	if rt.RName != "beta" || rt.RDest != "/p" {
+		t.Fatalf("resolver opened for %s/%s, want /p/beta", rt.RDest, rt.RName)
 	}
-	if m.resolverFrom != ScreenPlan {
-		t.Fatalf("resolver must return to the plan (from = %v)", m.resolverFrom)
+	// The plan tab stays in the strip: closing the resolver returns to it with
+	// the gate re-armed.
+	m = m.step(t, keyMsg(t, "esc"))
+	pt := m.activeTab()
+	if pt.Kind != TabPlan || !pt.Gate {
+		t.Fatalf("closing the resolver must return to the plan tab with the gate re-armed (kind=%v gate=%v)", pt.Kind, pt.Gate)
 	}
 }
 
@@ -258,11 +263,11 @@ func TestPlanGateNoShowsMarkedPlan(t *testing.T) {
 	m := modelWithConflict(t)
 	m, _ = m.openPlan()
 	m = m.step(t, keyMsg(t, "n"))
-	if m.planGate {
+	if m.activeTab().Gate {
 		t.Fatal("the gate must close on [No]")
 	}
-	if m.screen != ScreenPlan {
-		t.Fatalf("screen after [No] = %v, want plan", m.screen)
+	if m.activeTab().Kind != TabPlan {
+		t.Fatalf("active tab after [No] = %v, want plan", m.activeTab().Kind)
 	}
 	out := render80x24(m)
 	if !strings.Contains(out, "install beta@2.0.0") {
@@ -275,7 +280,7 @@ func TestPlanGateNoShowsMarkedPlan(t *testing.T) {
 	clean := modelWithConflict(t)
 	clean.state.Prefixes["/p"].Conflicts = nil // no conflict at all
 	clean, _ = clean.openPlan()
-	if clean.planGate {
+	if clean.activeTab().Gate {
 		t.Fatal("the gate must not be raised without conflicts")
 	}
 }
@@ -433,7 +438,7 @@ func TestDedupeAlignMarksAndApplyFreesReportedSpace(t *testing.T) {
 	}
 	m = m.stepRefresh(t, m.maybeResolveConflicts()) // the choice's background re-resolve settles
 	m2, _ := m.openPlan()
-	if m2.planGate {
+	if m2.activeTab().Gate {
 		t.Fatal("a resolved cell must not re-raise the plan gate")
 	}
 

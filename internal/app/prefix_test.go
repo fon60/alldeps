@@ -89,12 +89,12 @@ func TestVanishedPrefixFallsBackToFirstWhenActiveGone(t *testing.T) {
 func TestPickerEnterSwitches(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha")
 	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p/v24"}, {ID: "/p/v22"}}
-	m.screen = ScreenPicker
+	m.overlay = OverlayPicker
 	m.pickerCursor = 1
 
 	next, cmd := m.Update(keyMsg(t, "enter"))
 	m = next.(Model)
-	if m.screen != ScreenList {
+	if m.overlay != OverlayNone {
 		t.Fatal("picker should close on enter")
 	}
 	if m.state.ActivePrefixID != "/p/v22" {
@@ -107,9 +107,9 @@ func TestPickerEnterSwitches(t *testing.T) {
 
 func TestPickerEscReturns(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p/v24", "alpha")
-	m.screen = ScreenPicker
+	m.overlay = OverlayPicker
 	next, _ := m.Update(keyMsg(t, "esc"))
-	if next.(Model).screen != ScreenList {
+	if next.(Model).overlay != OverlayNone {
 		t.Fatal("esc should return to the list")
 	}
 }

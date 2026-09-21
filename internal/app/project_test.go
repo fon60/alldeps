@@ -106,8 +106,8 @@ func TestProjectSwitcherExactlyOneActiveAndSwitches(t *testing.T) {
 	}
 
 	m = m.switchManagerTo(t, "composer")
-	if m.screen != ScreenList {
-		t.Fatalf("screen after select = %v, want list", m.screen)
+	if m.overlay != OverlayNone {
+		t.Fatalf("overlay after select = %v, want none (back to list)", m.overlay)
 	}
 	m = m.step(t, keyMsg(t, "M"))
 	if out := render80x24(m); strings.Count(out, "*") != 1 {
@@ -217,9 +217,9 @@ func TestProjectPlanScopedToActiveAdapter(t *testing.T) {
 		t.Fatalf("group = %s/%s, want composer//p/vendor", groups[0].manager, groups[0].dest)
 	}
 
-	m = m.step(t, keyMsg(t, "g")) // open the plan preview
-	if m.screen != ScreenPlan {
-		t.Fatalf("screen = %v, want plan", m.screen)
+	m = m.step(t, keyMsg(t, "g")) // open the plan tab
+	if m.activeTab().Kind != TabPlan {
+		t.Fatalf("active tab = %v, want plan", m.activeTab().Kind)
 	}
 	if out := render80x24(m); strings.Contains(out, "npm @") {
 		t.Fatalf("plan built under composer must not show npm operations:\n%s", out)

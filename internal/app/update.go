@@ -46,7 +46,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.locks != nil {
 				if err := m.locks.Acquire(id); err != nil {
 					m.notice = heldNotice(id, err)
-					m.screen = ScreenPicker
+					m.overlay = OverlayPicker
 					m.pickerLocked = m.lockedEnvs()
 					return m, nil
 				}
@@ -57,7 +57,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.loadAllEnvsCmd()
 		}
-		if m.screen == ScreenPicker {
+		if m.overlay == OverlayPicker {
 			m.pickerLocked = m.lockedEnvs()
 			for i, e := range m.envs() {
 				if !m.pickerLocked[e.ID] {
@@ -110,8 +110,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = fmt.Sprintf("upgradability check: %d of %d packages failed", msg.failed, msg.total)
 		}
 	case searchMsg:
+		idx := m.findTab(TabSearch, msg.query)
+		if idx < 0 {
+			return m, nil // stale: the search tab was closed or re-queried
+		}
+		t := &m.tabs[idx]
 		if msg.err != nil {
-			m.searchLoading = false
+			t.Loading = false
 			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
 				m.notice = "no registry configured for this prefix"
 			} else if msg.from > 0 {
@@ -127,7 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.from == 0 {
 			m.notice = ""
 		}
-		m.clampCursor()
+		m.clampTab(idx)
 	case sizesMsg:
 		if ps := m.state.Prefixes[msg.prefixID]; ps != nil {
 			if p := ps.Packages[msg.name]; p != nil {
@@ -159,43 +164,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		ps.Conflicts = fresh
 	case infoDataMsg:
-		if msg.name != m.infoName || m.screen != ScreenInfo && m.screen != ScreenVersions {
-			return m, nil // stale: the user moved on
+		idx := m.findTab(TabInfo, msg.name)
+		if idx < 0 {
+			return m, nil // stale: the info tab was closed
 		}
+		t := &m.tabs[idx]
 		if msg.err != nil {
-			m.infoErr = "details unavailable: " + msg.err.Error()
+			t.Err = "details unavailable: " + msg.err.Error()
 			return m, nil
 		}
-		m.infoDoc = msg.doc
-		m.infoLocal = msg.local
+		t.Doc = msg.doc
+		t.Local = msg.local
 	case versionsMsg:
-		if msg.name != m.infoName || m.screen != ScreenVersions {
-			return m, nil // stale: the user moved on
+		idx := m.findTab(TabVersions, msg.name)
+		if idx < 0 {
+			return m, nil // stale: the versions tab was closed
 		}
+		t := &m.tabs[idx]
 		if msg.err != nil {
 			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
-				m.infoErr = "no registry configured for this prefix — version history unavailable"
+				t.Err = "no registry configured for this prefix — version history unavailable"
 			} else {
-				m.infoErr = "version history unavailable: " + msg.err.Error()
+				t.Err = "version history unavailable: " + msg.err.Error()
 			}
-			m.screen = ScreenInfo
 			return m, nil
 		}
-		m.infoDoc = msg.doc
-		m.positionVersionCursor()
+		t.Doc = msg.doc
+		m.positionVersionCursor(idx)
 	case readmeMsg:
-		if msg.name != m.infoName || m.screen != ScreenReadme {
-			return m, nil // stale: the user moved on
+		idx := m.findTab(TabReadme, msg.name)
+		if idx < 0 {
+			return m, nil // stale: the readme tab was closed
 		}
 		if msg.err != nil {
 			if errors.Is(msg.err, ecosystem.ErrNoRegistry) {
-				m.setReadme("")
+				m.setReadmeLines(idx, "")
 				return m, nil
 			}
-			m.readmeLines = []string{fmt.Sprintf("readme unavailable: %s", msg.err)}
+			m.tabs[idx].ReadmeLines = []string{fmt.Sprintf("readme unavailable: %s", msg.err)}
 			return m, nil
 		}
-		m.setReadme(msg.text)
+		m.setReadmeLines(idx, msg.text)
 	case applyBatchMsg:
 		ab := m.applyBatches[msg.idx]
 		if msg.err != nil {
@@ -292,6 +301,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "enter", " ":
+				if m.applyFromTab < len(m.tabs) {
+					m.tabIdx = m.applyFromTab // the run started from this tab; return to it
+				}
 				m.applyDone = false
 				return m, nil
 			case "q":
@@ -320,7 +332,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateKey routes a single keypress.
+// updateKey routes a single keypress in fixed order (design D4): quit
+// confirmation, then the focused prompt, then any open overlay, then the
+// plan's conflict gate, then tab level (move / close), then the active
+// tab's own keys.
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitConfirm {
 		switch msg.String() {
@@ -335,45 +350,58 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.prompt != nil {
 		return m.updatePrompt(msg)
 	}
-	if msg.String() == "?" {
-		m.helpFrom = m.screen
-		m.screen = ScreenHelp
-		m.helpScroll = 0
-		return m, nil
-	}
-	if m.screen == ScreenPicker {
+	switch m.overlay {
+	case OverlayPicker:
 		return m.updatePicker(msg)
-	}
-	if m.screen == ScreenManager {
+	case OverlayManager:
 		return m.updateManager(msg)
-	}
-	if m.screen == ScreenTargets {
+	case OverlayTargets:
 		return m.updateTargets(msg)
 	}
-	if m.screen == ScreenPlan {
-		return m.updatePlan(msg)
-	}
-	if m.screen == ScreenInfo {
-		return m.updateInfo(msg)
-	}
-	if m.screen == ScreenVersions {
-		return m.updateVersions(msg)
-	}
-	if m.screen == ScreenReadme {
-		return m.updateReadme(msg)
-	}
-	if m.screen == ScreenResolver {
-		return m.updateResolver(msg)
-	}
-	if m.screen == ScreenHelp {
-		return m.updateHelp(msg)
+	if t := m.activeTab(); t.Kind == TabPlan && t.Gate {
+		return m.updatePlanGate(msg)
 	}
 	switch msg.String() {
-	case "esc":
-		if m.searchActive {
-			m.clearSearch()
-			m.notice = "search cleared — showing installed packages"
-		}
+	case "ctrl+h", "ctrl+left":
+		m.moveTab(-1)
+		return m, nil
+	case "ctrl+l", "ctrl+right":
+		m.moveTab(1)
+		return m, nil
+	}
+	if m.tabIdx > 0 && (msg.String() == "q" || msg.String() == "esc") {
+		m.closeActiveTab()
+		return m, nil
+	}
+	if msg.String() == "?" {
+		m.openTab(TabHelp, "")
+		return m, nil
+	}
+	switch m.activeTab().Kind {
+	case TabPlan:
+		return m.updatePlan(msg)
+	case TabInfo:
+		return m.updateInfo(msg)
+	case TabVersions:
+		return m.updateVersions(msg)
+	case TabReadme:
+		return m.updateReadme(msg)
+	case TabResolver:
+		return m.updateResolver(msg)
+	case TabHelp:
+		return m.updateHelp(msg)
+	default:
+		return m.updateList(msg)
+	}
+}
+
+// updateList handles the keys shared by the List and Search tabs (both are
+// list-like: a cursor over rows plus marks). q quits only here, because every
+// other tab closes on q before its own keys run.
+func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	t := &m.tabs[m.tabIdx]
+	searching := t.Kind == TabSearch
+	switch msg.String() {
 	case "q", "Q":
 		if m.state.TotalPending() > 0 {
 			m.quitConfirm = true
@@ -382,7 +410,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.releaseAll()
 		return m, tea.Quit
 	case "E":
-		m.screen = ScreenPicker
+		m.overlay = OverlayPicker
 		m.pickerLocked = m.lockedEnvs()
 		m.pickerCursor = 0
 		for i, e := range m.envs() {
@@ -394,7 +422,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		return m, m.cycleEnv()
 	case "M":
-		m.screen = ScreenManager
+		m.overlay = OverlayManager
 		m.managerCursor = 0
 		for i, id := range m.managerIDs() {
 			if id == m.activeManagerID {
@@ -418,8 +446,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prompt = newPrompt(PromptFilter)
 		m.prompt.input.Focus()
 	case "l":
-		if m.searchActive {
-			m.notice = "clear the search first (esc), then match installed packages"
+		if searching {
+			m.notice = "the local match applies to the list tab — close the search tab first"
 			return m, nil
 		}
 		m.prompt = newPrompt(PromptLocal)
@@ -440,8 +468,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.markRevert()
 	case "r":
-		if m.searchActive {
-			m.notice = "clear the search first (esc), then resolve conflicts"
+		if searching {
+			m.notice = "conflict resolution applies to the list tab — close the search tab first"
 			return m, nil
 		}
 		u := m.selectedUnified()
@@ -453,7 +481,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.notice = u.Name + " has no unresolved conflict"
 			return m, nil
 		}
-		return m.openResolver(dest, u.Name, ScreenList)
+		return m.openResolver(dest, u.Name)
 	case "U":
 		n := 0
 		for _, e := range m.envs() {
@@ -474,14 +502,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "S":
 		m.state.SortKey = m.state.SortKey.Next()
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-			m.syncListTop()
+		if t.Cursor > 0 {
+			t.Cursor--
+			m.syncListTop(m.tabIdx)
 		}
 	case "down", "j":
-		if m.cursor < len(m.visibleRows())-1 {
-			m.cursor++
-			m.syncListTop()
+		if t.Cursor < len(m.displayRows())-1 {
+			t.Cursor++
+			m.syncListTop(m.tabIdx)
 		} else if m.hasMoreSearch() {
 			return m, m.loadMoreSearchCmd() // infinite scroll: load the next page
 		}
@@ -489,11 +517,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updatePicker handles keys while the environment picker is open.
+// updatePicker handles keys while the environment picker overlay is open.
 func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
-		m.screen = ScreenList
+		m.overlay = OverlayNone
 		return m, nil
 	case "up", "k":
 		if m.pickerCursor > 0 {
@@ -510,7 +538,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.notice = "environment " + displayPath(id) + " is open in another npmitude — choose a different environment"
 				return m, nil
 			}
-			m.screen = ScreenList
+			m.overlay = OverlayNone
 			return m, m.switchEnv(id)
 		}
 	}
@@ -528,7 +556,7 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	ids := m.managerIDs()
 	switch msg.String() {
 	case "esc", "q":
-		m.screen = ScreenList
+		m.overlay = OverlayNone
 		return m, nil
 	case "up", "k":
 		if m.managerCursor > 0 {
@@ -542,7 +570,7 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.managerCursor < len(ids) {
 			id := ids[m.managerCursor]
 			if id == m.activeManagerID {
-				m.screen = ScreenList
+				m.overlay = OverlayNone
 				return m, nil
 			}
 			if m.isProject() && m.locks != nil {
@@ -560,21 +588,21 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.locks.Release(e.ID)
 				}
 			}
-			m.screen = ScreenList
+			m.overlay = OverlayNone
 			return m, m.loadAllEnvsCmd()
 		}
 	}
 	return m, nil
 }
 
-// updateTargets handles keys on the install-target popup: multi-select the
-// eligible destinations (space toggles) and confirm with enter. Cancelling
-// records nothing.
+// updateTargets handles keys on the install-target popup overlay:
+// multi-select the eligible destinations (space toggles) and confirm with
+// enter. Cancelling records nothing.
 func (m Model) updateTargets(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(m.installTargets)
 	switch msg.String() {
 	case "esc", "q":
-		m.screen = ScreenList
+		m.overlay = OverlayNone
 		return m, nil
 	case "up", "k":
 		if m.installTargetCursor > 0 {
@@ -612,120 +640,122 @@ func (m Model) updateTargets(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = "no changes"
 		}
-		m.screen = ScreenList
+		m.overlay = OverlayNone
 	}
 	return m, nil
 }
 
-// updatePlan handles keys while the plan preview is open. While the conflict
-// gate popup is up it offers exactly two choices: [Yes] opens the resolver
-// for the first affected package, [No] shows the marked plan. Cancelling the
-// plan leaves all marks pending and executes nothing; confirming with g makes
-// "g,g" a quick shortcut: open the plan, apply it.
-func (m Model) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.planGate {
-		switch msg.String() {
-		case "y", "Y", "enter":
-			dest, name := m.nextConflictCell()
-			if dest == "" {
-				m.planGate = false
-				return m, nil
-			}
-			return m.openResolver(dest, name, ScreenPlan)
-		case "n", "N", "esc", "q":
-			m.planGate = false
+// updatePlanGate handles keys while the plan tab's conflict gate popup is up:
+// [y] opens the resolver for the first affected cell, [n]/esc/q dismiss the
+// gate and show the marked plan. The gate blocks every other key, including
+// tab movement and closing the plan tab.
+func (m Model) updatePlanGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	t := &m.tabs[m.tabIdx]
+	switch msg.String() {
+	case "y", "Y", "enter":
+		dest, name := m.nextConflictCell()
+		if dest == "" {
+			t.Gate = false
 			return m, nil
 		}
+		return m.openResolver(dest, name)
+	case "n", "N", "esc", "q":
+		t.Gate = false
 		return m, nil
 	}
+	return m, nil
+}
+
+// updatePlan handles keys on the plan tab (the gate is handled first): g or
+// enter applies; n closes the tab (q/esc close it at the tab level). Cancelling
+// leaves all marks pending and executes nothing.
+func (m Model) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "g", "G", "enter":
 		return m.startApply()
-	case "n", "esc", "q":
-		m.screen = ScreenList
+	case "n":
+		m.closeActiveTab()
 		return m, nil
 	}
 	return m, nil
 }
 
-// updateResolver handles keys on the per-package resolution screen: j/k move
-// over the flat option list of all conflicts of the cell, enter applies the
-// option under the cursor (updating marks and re-resolving in the background),
-// esc/q returns to the opening screen.
+// updateResolver handles keys on the resolver tab: j/k move over the flat
+// option list of all conflicts of the cell, enter applies the option under
+// the cursor (updating marks and re-resolving in the background). esc/q close
+// the tab at the tab level.
 func (m Model) updateResolver(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	n := len(m.resolverOptionRows())
+	t := &m.tabs[m.tabIdx]
+	n := len(m.resolverOptionRows(t))
 	switch msg.String() {
-	case "esc", "q":
-		m.screen = m.resolverFrom
-		if m.screen == ScreenPlan {
-			m.planGate = m.planHasConflicts()
-		}
-		return m, nil
 	case "up", "k":
-		if m.resolverCursor > 0 {
-			m.resolverCursor--
+		if t.RCursor > 0 {
+			t.RCursor--
 		}
 	case "down", "j":
-		if m.resolverCursor < n-1 {
-			m.resolverCursor++
+		if t.RCursor < n-1 {
+			t.RCursor++
 		}
 	case "enter", " ":
-		rows := m.resolverOptionRows()
-		if m.resolverCursor >= len(rows) {
+		rows := m.resolverOptionRows(t)
+		if t.RCursor >= len(rows) {
 			return m, nil
 		}
-		m.applyResolutionOption(rows[m.resolverCursor])
+		m.applyResolutionOption(rows[t.RCursor])
 	}
 	return m, nil
 }
 
-// updateInfo handles keys on the info screen. j/k move the cursor over the
+// updateInfo handles keys on the info tab. j/k move the cursor over the
 // per-destination table; + and - mark the package for install or removal
-// against the destination under the cursor only.
+// against the destination under the cursor only; v/C open sibling tabs.
 func (m Model) updateInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	t := &m.tabs[m.tabIdx]
 	n := len(m.envs())
-	if m.infoDestCursor >= n && n > 0 {
-		m.infoDestCursor = n - 1
+	if t.DestCursor >= n && n > 0 {
+		t.DestCursor = n - 1
 	}
 	switch msg.String() {
-	case "esc", "q", "enter", "d":
-		m.screen = ScreenList
+	case "enter", "d":
+		m.closeActiveTab()
 	case "v":
 		return m.openVersions()
 	case "C":
 		return m.openReadme()
 	case "up", "k":
-		if m.infoDestCursor > 0 {
-			m.infoDestCursor--
+		if t.DestCursor > 0 {
+			t.DestCursor--
 		}
 	case "down", "j":
-		if m.infoDestCursor < n-1 {
-			m.infoDestCursor++
+		if t.DestCursor < n-1 {
+			t.DestCursor++
 		}
 	case "+":
-		m.markDestInstall()
+		m.markDestInstall(t)
 	case "-":
-		m.markDestRemove()
+		m.markDestRemove(t)
 	}
 	return m, nil
 }
 
-// updateVersions handles keys on the version history screen.
+// updateVersions handles keys on the versions tab; enter pins the version
+// under the cursor.
 func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	t := &m.tabs[m.tabIdx]
 	n := 0
-	if m.infoDoc != nil {
-		n = len(m.infoDoc.Versions)
+	if t.Doc != nil {
+		n = len(t.Doc.Versions)
 	}
 	switch msg.String() {
-	case "esc", "q":
-		m.screen = ScreenInfo
 	case "up", "k":
-		if m.verCursor > 0 {
-			m.verCursor--
+		if t.VerCursor > 0 {
+			t.VerCursor--
+			m.syncVersionTop(m.tabIdx)
 		}
 	case "down", "j":
-		if m.verCursor < n-1 {
-			m.verCursor++
+		if t.VerCursor < n-1 {
+			t.VerCursor++
+			m.syncVersionTop(m.tabIdx)
 		}
 	case "enter", " ":
 		m.pinVersion()
@@ -733,36 +763,38 @@ func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateReadme handles keys on the README screen.
+// updateReadme handles keys on the readme tab.
 func (m Model) updateReadme(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	t := &m.tabs[m.tabIdx]
 	h := m.readmeContentH()
-	maxScroll := len(m.readmeLines) - h
+	maxScroll := len(t.ReadmeLines) - h
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
 	switch msg.String() {
-	case "esc", "q", "enter":
-		m.screen = ScreenInfo
+	case "enter":
+		m.closeActiveTab()
 	case "up", "k":
-		if m.readmeScroll > 0 {
-			m.readmeScroll--
+		if t.ReadmeScroll > 0 {
+			t.ReadmeScroll--
 		}
 	case "down", "j":
-		if m.readmeScroll < maxScroll {
-			m.readmeScroll++
+		if t.ReadmeScroll < maxScroll {
+			t.ReadmeScroll++
 		}
 	case "g":
-		m.readmeScroll = 0
+		t.ReadmeScroll = 0
 	case "G":
-		m.readmeScroll = maxScroll
+		t.ReadmeScroll = maxScroll
 	}
 	return m, nil
 }
 
-// updateHelp handles keys on the help screen; any of the close keys returns
-// to the screen it was opened from.
+// updateHelp handles keys on the help tab; enter closes it (esc/q do at the
+// tab level).
 func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	bodyH := m.height - 2
+	t := &m.tabs[m.tabIdx]
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -771,20 +803,20 @@ func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		maxScroll = 0
 	}
 	switch msg.String() {
-	case "esc", "q", "Q", "enter":
-		m.screen = m.helpFrom
+	case "Q", "enter":
+		m.closeActiveTab()
 	case "up", "k":
-		if m.helpScroll > 0 {
-			m.helpScroll--
+		if t.HelpScroll > 0 {
+			t.HelpScroll--
 		}
 	case "down", "j":
-		if m.helpScroll < maxScroll {
-			m.helpScroll++
+		if t.HelpScroll < maxScroll {
+			t.HelpScroll++
 		}
 	case "g":
-		m.helpScroll = 0
+		t.HelpScroll = 0
 	case "G":
-		m.helpScroll = maxScroll
+		t.HelpScroll = maxScroll
 	}
 	return m, nil
 }
@@ -804,7 +836,29 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			query := strings.TrimSpace(m.prompt.input.Value())
 			if query != "" {
 				if ps := m.state.Active(); ps != nil {
-					cmd = m.searchCmd(ps.ID, query, 0)
+					if at := m.activeTab(); at.Kind == TabSearch {
+						// Re-query the active search tab in place: retarget its
+						// subject, drop its loaded (unmarked) results, refetch 0.
+						idx := m.tabIdx
+						m.discardSearchRows(idx)
+						t := &m.tabs[idx]
+						t.Subject = query
+						t.Query = query
+						t.Hits = nil
+						t.Order = nil
+						t.Total = 0
+						t.Fetched = 0
+						t.Cursor = 0
+						t.ListTop = 0
+						t.Loading = true
+						cmd = m.searchCmd(ps.ID, query, 0)
+					} else {
+						idx, created := m.openTab(TabSearch, query)
+						if created {
+							m.tabs[idx].Loading = true
+							cmd = m.searchCmd(ps.ID, query, 0)
+						}
+					}
 				} else {
 					m.notice = "no registry configured for this prefix"
 				}
@@ -817,37 +871,51 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.prompt.input, cmd = m.prompt.input.Update(msg)
 		if m.prompt.kind == PromptLocal {
-			m.cursor = 0
+			if lt := m.listTab(); lt != nil {
+				lt.Cursor = 0
+			}
 		}
 		return m, cmd
 	}
 }
 
+// clampCursor clamps the active tab's cursor when it is list-like.
 func (m *Model) clampCursor() {
-	if n := len(m.visibleRows()); m.cursor > n-1 && n > 0 {
-		m.cursor = n - 1
-	} else if n == 0 {
-		m.cursor = 0
+	m.clampTab(m.tabIdx)
+}
+
+// clampTab keeps a list-like tab's cursor inside its displayed rows.
+func (m *Model) clampTab(idx int) {
+	t := &m.tabs[idx]
+	if t.Kind != TabList && t.Kind != TabSearch {
+		return
 	}
-	m.syncListTop()
+	n := len(m.tabRows(*t))
+	if t.Cursor > n-1 && n > 0 {
+		t.Cursor = n - 1
+	} else if n == 0 {
+		t.Cursor = 0
+	}
+	m.syncListTop(idx)
 }
 
 // listHeight is the height of the list box; its first line is the column
 // header, so it holds listHeight()-1 data rows.
 func (m Model) listHeight() int {
-	h := m.height - 2 - 5 // header(2) + description(3) + prompt(1) + status(1)
+	h := m.height - 3 - 5 // header(3) + description(3) + prompt(1) + status(1)
 	if h < 1 {
 		h = 1
 	}
 	return h
 }
 
-// syncListTop keeps the cursor inside the visible viewport: the list scrolls
-// only when the cursor leaves the currently displayed range, in either
-// direction. Visible data rows are one less than the box height because the
-// column header occupies the first line of the box.
-func (m *Model) syncListTop() {
-	n := len(m.visibleRows())
+// syncListTop keeps a list-like tab's cursor inside the visible viewport: the
+// list scrolls only when the cursor leaves the currently displayed range, in
+// either direction. Visible data rows are one less than the box height because
+// the column header occupies the first line of the box.
+func (m *Model) syncListTop(idx int) {
+	t := &m.tabs[idx]
+	n := len(m.tabRows(*t))
 	h := m.listHeight() - 1
 	if h < 1 {
 		h = 1
@@ -856,16 +924,16 @@ func (m *Model) syncListTop() {
 	if maxTop < 0 {
 		maxTop = 0
 	}
-	if m.cursor < m.listTop {
-		m.listTop = m.cursor
+	if t.Cursor < t.ListTop {
+		t.ListTop = t.Cursor
 	}
-	if m.cursor >= m.listTop+h {
-		m.listTop = m.cursor - h + 1
+	if t.Cursor >= t.ListTop+h {
+		t.ListTop = t.Cursor - h + 1
 	}
-	if m.listTop > maxTop {
-		m.listTop = maxTop
+	if t.ListTop > maxTop {
+		t.ListTop = maxTop
 	}
-	if m.listTop < 0 {
-		m.listTop = 0
+	if t.ListTop < 0 {
+		t.ListTop = 0
 	}
 }

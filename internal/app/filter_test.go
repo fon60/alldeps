@@ -15,6 +15,14 @@ func keyMsg(t *testing.T, s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+h":
+		return tea.KeyMsg{Type: tea.KeyCtrlH}
+	case "ctrl+l":
+		return tea.KeyMsg{Type: tea.KeyCtrlL}
+	case "ctrl+left":
+		return tea.KeyMsg{Type: tea.KeyCtrlLeft}
+	case "ctrl+right":
+		return tea.KeyMsg{Type: tea.KeyCtrlRight}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -111,8 +119,8 @@ func TestLocalMatchNarrowsInstalledOnly(t *testing.T) {
 	if got := names(rows); len(got) != 1 || got[0] != "npm" {
 		t.Fatalf("local match rows = %v, want [npm] (installed only)", got)
 	}
-	if m.cursor != 0 {
-		t.Fatalf("cursor = %d, want 0 (first match)", m.cursor)
+	if m.tabs[0].Cursor != 0 {
+		t.Fatalf("cursor = %d, want 0 (first match)", m.tabs[0].Cursor)
 	}
 
 	m = m.step(t, keyMsg(t, "esc"))
@@ -142,8 +150,8 @@ func TestCoalescedKeyBurstProcessedPerRune(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta", "gamma", "delta")
 	// One KeyMsg carrying three runes (as bubbletea delivers a fast burst).
 	m = m.step(t, keyMsg(t, "jjj"))
-	if m.cursor != 3 {
-		t.Fatalf("cursor = %d after coalesced jjj burst, want 3 (each rune must be processed)", m.cursor)
+	if m.tabs[0].Cursor != 3 {
+		t.Fatalf("cursor = %d after coalesced jjj burst, want 3 (each rune must be processed)", m.tabs[0].Cursor)
 	}
 }
 

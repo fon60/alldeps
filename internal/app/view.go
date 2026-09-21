@@ -27,29 +27,33 @@ func (m Model) View() string {
 		return "npmitude — waiting for terminal size…"
 	}
 	var body string
-	switch m.screen {
-	case ScreenPicker:
-		body = m.pickerBody()
-	case ScreenManager:
-		body = m.managerBody()
-	case ScreenTargets:
-		body = m.targetsBody()
-	case ScreenPlan:
-		body = m.planBody()
-	case ScreenInfo:
-		body = m.infoBody()
-	case ScreenVersions:
-		body = m.versionsBody()
-	case ScreenReadme:
-		body = m.readmeBody()
-	case ScreenResolver:
-		body = m.resolverBody()
-	case ScreenHelp:
-		body = m.helpBody()
+	switch {
+	case m.state.Applying || m.applyDone:
+		body = m.applyBody()
+	case m.overlay != OverlayNone:
+		switch m.overlay {
+		case OverlayPicker:
+			body = m.pickerBody()
+		case OverlayManager:
+			body = m.managerBody()
+		case OverlayTargets:
+			body = m.targetsBody()
+		}
 	default:
-		if m.state.Applying || m.applyDone {
-			body = m.applyBody()
-		} else {
+		switch m.activeTab().Kind {
+		case TabPlan:
+			body = m.planBody()
+		case TabInfo:
+			body = m.infoBody()
+		case TabVersions:
+			body = m.versionsBody()
+		case TabReadme:
+			body = m.readmeBody()
+		case TabResolver:
+			body = m.resolverBody()
+		case TabHelp:
+			body = m.helpBody()
+		default:
 			body = lipgloss.JoinVertical(lipgloss.Left,
 				m.listRegion(m.listHeight()),
 				m.descRegion(),
@@ -71,7 +75,103 @@ func (m Model) headerLines() []string {
 	return []string{
 		headerTitleStyle.Width(m.width).Render(fitText(title, m.width)),
 		headerHintStyle.Width(m.width).Render(fitText(m.screenHints(), m.width)),
+		m.tabStripLine(),
 	}
+}
+
+// tabLabel is the strip text of one tab: the kind word plus its subject (the
+// search query in quotes, the package name for the per-package tabs).
+func tabLabel(t Tab) string {
+	switch t.Kind {
+	case TabList:
+		return "List"
+	case TabSearch:
+		return fmt.Sprintf("Search %q", t.Subject)
+	case TabInfo:
+		return "Info " + t.Subject
+	case TabVersions:
+		return "Versions " + t.Subject
+	case TabReadme:
+		return "Readme " + t.Subject
+	case TabResolver:
+		return "Resolve " + t.Subject
+	case TabHelp:
+		return "Help"
+	case TabPlan:
+		return "Plan"
+	}
+	return "?"
+}
+
+// tabStripLine renders header line 3 (design D7): a full-width band on color
+// 28 of "[label]" cells, the active one on color 29 in bold white. When the
+// strip overflows, labels truncate first and the window shifts so the active
+// tab always stays visible.
+func (m Model) tabStripLine() string {
+	n := len(m.tabs)
+	avail := m.width
+	if avail < 1 {
+		avail = 1
+	}
+	labels := make([]string, n)
+	maxLabel := 0
+	for i, t := range m.tabs {
+		labels[i] = tabLabel(t)
+		if w := lipgloss.Width(labels[i]); w > maxLabel {
+			maxLabel = w
+		}
+	}
+	// width of the window [s,e] with every label capped at budget columns.
+	widthOf := func(s, e, budget int) int {
+		w := 0
+		for i := s; i <= e; i++ {
+			if i > s {
+				w++ // single space between cells
+			}
+			w += 2 + lipgloss.Width(fitText(labels[i], budget))
+		}
+		return w
+	}
+
+	start, end := 0, n-1
+	budget := maxLabel
+	// Phase A: keep every tab; truncate the labels down to a single column.
+	for budget > 1 && widthOf(start, end, budget) > avail {
+		budget--
+	}
+	if widthOf(start, end, budget) > avail {
+		// Phase B: even one-column labels overflow — drop the edge farthest from
+		// the active tab until the window fits, then re-expand the labels.
+		for widthOf(start, end, 1) > avail && end-start > 0 {
+			if (m.tabIdx-start) >= (end-m.tabIdx) {
+				start++
+			} else {
+				end--
+			}
+		}
+		budget = maxLabel
+		for budget > 1 && widthOf(start, end, budget) > avail {
+			budget--
+		}
+	}
+	if budget < 1 {
+		budget = 1
+	}
+
+	var cells []string
+	for i := start; i <= end; i++ {
+		cell := "[" + fitText(labels[i], budget) + "]"
+		if i == m.tabIdx {
+			cells = append(cells, tabStripActive.Render(cell))
+		} else {
+			cells = append(cells, tabStripIdle.Render(cell))
+		}
+	}
+	line := strings.Join(cells, tabStripBase.Render(" "))
+	if w := lipgloss.Width(line); w < avail {
+		line += tabStripBase.Render(repeat(" ", avail-w))
+	}
+	return line
 }
 
 func (m Model) screenHints() string {
@@ -81,27 +181,30 @@ func (m Model) screenHints() string {
 		}
 		return "applying changes — please wait"
 	}
-	switch m.screen {
-	case ScreenPicker:
+	switch m.overlay {
+	case OverlayPicker:
 		return "enter: switch environment   esc/q: back"
-	case ScreenManager:
+	case OverlayManager:
 		return "enter: select manager   esc/q: back"
-	case ScreenTargets:
+	case OverlayTargets:
 		return "space: toggle   enter: confirm   esc/q: cancel"
-	case ScreenPlan:
-		if m.planGate {
+	}
+	t := m.activeTab()
+	switch t.Kind {
+	case TabPlan:
+		if t.Gate {
 			return "[y] resolve conflicts   [n] show the marked plan"
 		}
 		return "[g] apply   [n/esc] cancel"
-	case ScreenResolver:
+	case TabResolver:
 		return "[j/k] choose option   [enter] apply it   [esc/q] back"
-	case ScreenInfo:
+	case TabInfo:
 		return "[esc] back   [v] versions   [C] readme"
-	case ScreenVersions:
+	case TabVersions:
 		return "[enter] pin version   [j/k] move   [esc] back"
-	case ScreenReadme:
+	case TabReadme:
 		return "[j/k] scroll   [g/G] top/bottom   [q/esc] back"
-	case ScreenHelp:
+	case TabHelp:
 		return "[j/k] scroll   [g/G] top/bottom   [esc/q/enter] close"
 	default:
 		return keyHints
@@ -109,7 +212,7 @@ func (m Model) screenHints() string {
 }
 
 func (m Model) pickerBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -137,7 +240,7 @@ func (m Model) pickerBody() string {
 // active (marked with *), and selecting another changes only the active
 // manager — installed state and pending marks are preserved.
 func (m Model) managerBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -161,7 +264,7 @@ func (m Model) managerBody() string {
 // targetsBody renders the install-target popup: the eligible destinations of
 // the active manager with multi-select markers (x = selected).
 func (m Model) targetsBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -209,11 +312,11 @@ func pickerRow(cursor bool, marker, source, version string, count int, path stri
 // involved in an unresolved conflict carry the same "!" indicator as the list.
 // While the conflict gate popup is up it replaces the whole body.
 func (m Model) planBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	if m.planGate {
+	if m.activeTab().Gate {
 		return m.planGateBody(bodyH)
 	}
 	lines := []string{titleStyle.Render("Plan"), ""}
@@ -269,14 +372,15 @@ func (m Model) planBody() string {
 // copies with versions and sizes (spec: Node dedupe flavor reuses the
 // per-destination detail view).
 func (m Model) resolverBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("Resolve — " + m.resolverName), ""}
+	t := &m.tabs[m.tabIdx]
+	lines := []string{titleStyle.Render("Resolve — " + t.RName), ""}
 
-	mgr := m.managerForDest(m.resolverDest)
-	copies := m.dedupeCopies(mgr, m.resolverName)
+	mgr := m.managerForDest(t.RDest)
+	copies := m.dedupeCopies(mgr, t.RName)
 	if len(copies) >= 2 {
 		lines = append(lines, sectionStyle.Render("Copies by destination"))
 		for _, c := range copies {
@@ -290,7 +394,7 @@ func (m Model) resolverBody() string {
 		lines = append(lines, "")
 	}
 
-	conflicts := m.conflictsForCell(m.resolverDest, m.resolverName)
+	conflicts := m.conflictsForCell(t.RDest, t.RName)
 	if len(conflicts) == 0 {
 		lines = append(lines, "no unresolved conflicts for this package")
 	}
@@ -310,7 +414,7 @@ func (m Model) resolverBody() string {
 				}
 			}
 			label := fmt.Sprintf("  %2d. %-40s%s", flatIdx+1, truncate(o.Label, 40), delta)
-			if flatIdx == m.resolverCursor {
+			if flatIdx == t.RCursor {
 				label = cursorStyle.Render(label)
 			}
 			lines = append(lines, label)
@@ -353,15 +457,16 @@ func (m Model) planGateBody(bodyH int) string {
 // infoBody renders the package detail screen (spec: package-info). Missing
 // fields render as "(none)" so the layout never breaks.
 func (m Model) infoBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("Info — " + m.infoName), ""}
+	t := &m.tabs[m.tabIdx]
+	lines := []string{titleStyle.Render("Info — " + t.Name), ""}
 
 	var row *domain.PkgState
 	if ps := m.state.Active(); ps != nil {
-		row = ps.Packages[m.infoName]
+		row = ps.Packages[t.Name]
 	}
 	version, tag := "", ""
 	switch {
@@ -382,7 +487,7 @@ func (m Model) infoBody() string {
 			ver := "absent"
 			flag := ""
 			if ps := m.state.Prefixes[e.ID]; ps != nil {
-				if p := ps.Packages[m.infoName]; p != nil {
+				if p := ps.Packages[t.Name]; p != nil {
 					if p.Installed() {
 						ver = p.InstalledVersion
 					}
@@ -393,24 +498,24 @@ func (m Model) infoBody() string {
 				}
 			}
 			marker := "  "
-			if i == m.infoDestCursor {
+			if i == t.DestCursor {
 				marker = "* "
 			}
 			line := fmt.Sprintf("%s%s %s%s", marker, truncate(displayPath(e.ID), m.width-30), ver, flag)
-			if i == m.infoDestCursor {
+			if i == t.DestCursor {
 				line = cursorStyle.Render(line)
 			}
 			lines = append(lines, line)
 		}
 	}
 
-	if m.infoErr != "" {
-		lines = append(lines, noticeStyle.Render(m.infoErr))
+	if t.Err != "" {
+		lines = append(lines, noticeStyle.Render(t.Err))
 	}
-	if m.infoDoc == nil && m.infoErr == "" {
+	if t.Doc == nil && t.Err == "" {
 		lines = append(lines, "loading…")
 	}
-	d := m.infoDoc
+	d := t.Doc
 	if d != nil {
 		lines = append(lines, infoField("Description", d.Description))
 		lines = append(lines, infoField("Homepage", d.Homepage))
@@ -479,18 +584,19 @@ func sortedDeps(deps map[string]string) []depPair {
 // versionsBody renders the published-version list; the installed version gets
 // a "*" marker and the latest dist-tag is labeled.
 func (m Model) versionsBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("Versions — " + m.infoName), ""}
+	t := &m.tabs[m.tabIdx]
+	lines := []string{titleStyle.Render("Versions — " + t.Name), ""}
 	versions := []string{}
-	if m.infoDoc != nil {
-		versions = m.infoDoc.Versions
+	if t.Doc != nil {
+		versions = t.Doc.Versions
 	}
 	if len(versions) == 0 {
-		if m.infoErr != "" {
-			lines = append(lines, noticeStyle.Render(m.infoErr))
+		if t.Err != "" {
+			lines = append(lines, noticeStyle.Render(t.Err))
 		} else {
 			lines = append(lines, "loading…")
 		}
@@ -501,11 +607,11 @@ func (m Model) versionsBody() string {
 			marker = "* "
 		}
 		extra := ""
-		if m.infoDoc != nil && v == m.infoDoc.Latest {
+		if t.Doc != nil && v == t.Doc.Latest {
 			extra = "  (latest)"
 		}
 		line := fmt.Sprintf("%s%s%s", marker, v, extra)
-		if i == m.verCursor {
+		if i == t.VerCursor {
 			line = cursorStyle.Render(line)
 		}
 		lines = append(lines, line)
@@ -515,7 +621,7 @@ func (m Model) versionsBody() string {
 
 func (m Model) selectedInfoRow() *domain.PkgState {
 	if ps := m.state.Active(); ps != nil {
-		return ps.Packages[m.infoName]
+		return ps.Packages[m.activeTab().Name]
 	}
 	return nil
 }
@@ -523,7 +629,7 @@ func (m Model) selectedInfoRow() *domain.PkgState {
 // readmeContentH is the number of text lines the README body can show below
 // the header and its title line.
 func (m Model) readmeContentH() int {
-	h := m.height - 2 - 2 // header(2) + title + blank
+	h := m.height - 3 - 2 // header(3) + title + blank
 	if h < 1 {
 		h = 1
 	}
@@ -532,24 +638,25 @@ func (m Model) readmeContentH() int {
 
 // readmeBody renders the full-screen scrollable README text.
 func (m Model) readmeBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("README — " + m.infoName), ""}
+	t := &m.tabs[m.tabIdx]
+	lines := []string{titleStyle.Render("README — " + t.Name), ""}
 	h := m.readmeContentH()
-	scroll := m.readmeScroll
-	if scroll > len(m.readmeLines)-h && len(m.readmeLines) >= h {
-		scroll = len(m.readmeLines) - h
+	scroll := t.ReadmeScroll
+	if scroll > len(t.ReadmeLines)-h && len(t.ReadmeLines) >= h {
+		scroll = len(t.ReadmeLines) - h
 	}
 	if scroll < 0 {
 		scroll = 0
 	}
 	end := scroll + h
-	if end > len(m.readmeLines) {
-		end = len(m.readmeLines)
+	if end > len(t.ReadmeLines) {
+		end = len(t.ReadmeLines)
 	}
-	for _, l := range m.readmeLines[scroll:end] {
+	for _, l := range t.ReadmeLines[scroll:end] {
 		lines = append(lines, fitText(l, m.width))
 	}
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
@@ -627,12 +734,13 @@ func helpContentLines() []string {
 
 // helpBody renders the scrollable key-binding reference.
 func (m Model) helpBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
+	t := &m.tabs[m.tabIdx]
 	all := helpContentLines()
-	scroll := m.helpScroll
+	scroll := t.HelpScroll
 	if scroll > len(all)-bodyH && len(all) >= bodyH {
 		scroll = len(all) - bodyH
 	}
@@ -705,12 +813,13 @@ func (m Model) listRegion(h int) string {
 		padRight("Also", colCount),
 	)
 	lines := []string{headerStyle.Render(header)}
+	t := &m.tabs[m.tabIdx]
 	rows := m.displayRows()
-	end := m.listTop + (h - 1)
+	end := t.ListTop + (h - 1)
 	if end >= len(rows) {
 		end = len(rows) - 1
 	}
-	for i := m.listTop; i <= end && len(lines) < h; i++ {
+	for i := t.ListTop; i <= end && len(lines) < h; i++ {
 		u := rows[i]
 		r := u.Row
 		// Each cell is rendered as a self-contained styled segment: nesting a
@@ -736,7 +845,7 @@ func (m Model) listRegion(h int) string {
 		}
 		countCellS := padRight(countCell, colCount)
 		var row string
-		if i == m.cursor {
+		if i == t.Cursor {
 			row = lipgloss.JoinHorizontal(lipgloss.Left,
 				cursorFlagStyleCell.Render(flagCell),
 				cursorStyle.Render(nameCell),
@@ -763,7 +872,7 @@ func (m Model) listRegion(h int) string {
 // applyBody renders the full-screen apply view: the raw manager output of every
 // batch (auto-scrolled to the bottom) with a what-to-do-next line at the foot.
 func (m Model) applyBody() string {
-	bodyH := m.height - 2
+	bodyH := m.height - 3
 	if bodyH < 4 {
 		bodyH = 4
 	}
@@ -910,9 +1019,11 @@ const keyHints = "+ - = : marks  r resolve  U upgradable  x clear  enter info  /
 
 func (m Model) statusLine() string {
 	prefixID := m.state.ActivePrefixID
+	t := m.activeTab()
+	searching := t.Kind == TabSearch
 	rows := m.displayRows()
 	total := 0
-	if m.searchActive {
+	if searching {
 		if ps := m.state.Active(); ps != nil {
 			total = len(ps.Packages)
 		}
@@ -925,15 +1036,15 @@ func (m Model) statusLine() string {
 		filterTxt = m.state.FilterText
 	}
 	searchTxt := ""
-	if m.searchActive {
-		if m.searchTotal > 0 {
-			searchTxt = fmt.Sprintf(" search:%q %d/%d", m.searchQuery, m.searchFetched, m.searchTotal)
+	if searching {
+		if t.Total > 0 {
+			searchTxt = fmt.Sprintf(" search:%q %d/%d", t.Query, t.Fetched, t.Total)
 		} else {
-			searchTxt = fmt.Sprintf(" search:%q", m.searchQuery)
+			searchTxt = fmt.Sprintf(" search:%q", t.Query)
 		}
 	}
 	sortTxt := " sort:" + m.state.SortKey.String()
-	if m.searchActive {
+	if searching {
 		sortTxt = "" // the local sort does not apply to registry results
 	}
 	left := fmt.Sprintf("%d/%d pkgs, %d pending%s f:%s%s mgr:%s %s",
@@ -1024,6 +1135,12 @@ var (
 	primaryColor     = lipgloss.Color("28")
 	headerTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(primaryColor)
 	headerHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(primaryColor)
+
+	// Tab strip (header line 3, design D7): a full-width band on color 28 with
+	// [label] cells; the active cell sits on the brighter color 29 in bold white.
+	tabStripBase   = lipgloss.NewStyle().Background(primaryColor)
+	tabStripActive = lipgloss.NewStyle().Background(lipgloss.Color("29")).Bold(true).Foreground(lipgloss.Color("231"))
+	tabStripIdle   = lipgloss.NewStyle().Background(primaryColor).Foreground(lipgloss.Color("245"))
 
 	headerStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
 	flagStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))

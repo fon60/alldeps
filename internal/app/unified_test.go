@@ -58,14 +58,14 @@ func TestUnifiedListHeadlineByRank(t *testing.T) {
 
 func TestInfoDestRemoveMarksOnlyThatDestination(t *testing.T) {
 	m := twoDestModel(t)
-	m = m.step(t, keyMsg(t, "enter")) // info screen for alpha
-	if m.screen != ScreenInfo {
-		t.Fatalf("screen = %v, want info", m.screen)
+	m = m.step(t, keyMsg(t, "enter")) // info tab for alpha
+	if m.activeTab().Kind != TabInfo {
+		t.Fatalf("active tab = %v, want info", m.activeTab().Kind)
 	}
 	// Cursor starts on the headline destination (/p1); move to /p2 and remove.
 	m = m.step(t, keyMsg(t, "j"))
-	if m.infoDestCursor != 1 {
-		t.Fatalf("infoDestCursor = %d, want 1 (/p2)", m.infoDestCursor)
+	if m.activeTab().DestCursor != 1 {
+		t.Fatalf("dest cursor = %d, want 1 (/p2)", m.activeTab().DestCursor)
 	}
 	m = m.step(t, keyMsg(t, "-"))
 
@@ -108,8 +108,8 @@ func TestPlusSingleEligibleDestinationMarksDirectly(t *testing.T) {
 
 	m = m.step(t, keyMsg(t, "+"))
 
-	if m.screen != ScreenList {
-		t.Fatalf("screen = %v, want list (no popup for a single eligible destination)", m.screen)
+	if m.activeTab().Kind != TabList || m.overlay != OverlayNone {
+		t.Fatalf("active tab/overlay = %v/%v, want list with no popup for a single eligible destination", m.activeTab().Kind, m.overlay)
 	}
 	if got := m.state.Prefixes["/p"].Packages["ghost"].MarkFor("stub"); got != domain.MarkInstall {
 		t.Fatalf("mark = %v, want MarkInstall recorded directly", got)
@@ -127,8 +127,8 @@ func TestPlusMultipleEligibleDestinationsOpensPopup(t *testing.T) {
 	}
 	m = m.step(t, keyMsg(t, "+"))
 
-	if m.screen != ScreenTargets {
-		t.Fatalf("screen = %v, want the install-target popup", m.screen)
+	if m.overlay != OverlayTargets {
+		t.Fatalf("overlay = %v, want the install-target popup", m.overlay)
 	}
 	if len(m.installTargets) != 2 {
 		t.Fatalf("eligible destinations = %d, want 2", len(m.installTargets))
@@ -138,8 +138,8 @@ func TestPlusMultipleEligibleDestinationsOpensPopup(t *testing.T) {
 	m = m.step(t, keyMsg(t, " ")) // select the second as well
 	m = m.step(t, keyMsg(t, "enter"))
 
-	if m.screen != ScreenList {
-		t.Fatalf("screen after confirm = %v, want list", m.screen)
+	if m.overlay != OverlayNone {
+		t.Fatalf("overlay after confirm = %v, want none (back to list)", m.overlay)
 	}
 	for _, d := range []string{"/p1", "/p2"} {
 		p := m.state.Prefixes[d].Packages["ghost"]
@@ -156,14 +156,14 @@ func TestPlusPopupCancelRecordsNothing(t *testing.T) {
 
 	m = m.step(t, keyMsg(t, "j"))
 	m = m.step(t, keyMsg(t, "+"))
-	if m.screen != ScreenTargets {
-		t.Fatalf("screen = %v, want the install-target popup", m.screen)
+	if m.overlay != OverlayTargets {
+		t.Fatalf("overlay = %v, want the install-target popup", m.overlay)
 	}
 	m = m.step(t, keyMsg(t, " "))
 	m = m.step(t, keyMsg(t, "esc"))
 
-	if m.screen != ScreenList {
-		t.Fatalf("screen after cancel = %v, want list", m.screen)
+	if m.overlay != OverlayNone {
+		t.Fatalf("overlay after cancel = %v, want none (back to list)", m.overlay)
 	}
 	for _, d := range []string{"/p1", "/p2"} {
 		if p := m.state.Prefixes[d].Packages["ghost"]; p != nil && p.MarkFor("stub") == domain.MarkInstall {

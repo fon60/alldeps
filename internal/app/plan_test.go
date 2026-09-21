@@ -98,8 +98,8 @@ func TestPlanGroupsAcrossDestinations(t *testing.T) {
 func TestApplyWithNoPendingShowsNotice(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
 	m = m.step(t, keyMsg(t, "g"))
-	if m.screen != ScreenList {
-		t.Fatalf("screen = %v, want list", m.screen)
+	if m.activeTab().Kind != TabList {
+		t.Fatalf("active tab = %v, want list", m.activeTab().Kind)
 	}
 	if m.notice == "" {
 		t.Fatal("expected a notice about no pending changes")
@@ -109,12 +109,12 @@ func TestApplyWithNoPendingShowsNotice(t *testing.T) {
 func TestPlanCancelLeavesMarks(t *testing.T) {
 	m := modelWithMarks(t, "/p")
 	m = m.step(t, keyMsg(t, "g"))
-	if m.screen != ScreenPlan {
-		t.Fatalf("screen = %v, want plan", m.screen)
+	if m.activeTab().Kind != TabPlan {
+		t.Fatalf("active tab = %v, want plan", m.activeTab().Kind)
 	}
 	m = m.step(t, keyMsg(t, "n"))
-	if m.screen != ScreenList {
-		t.Fatalf("screen after cancel = %v, want list", m.screen)
+	if m.activeTab().Kind != TabList {
+		t.Fatalf("active tab after cancel = %v, want list", m.activeTab().Kind)
 	}
 	if got := m.state.PendingMarkCount("/p", "stub"); got != 4 {
 		t.Fatalf("pending after cancel = %d, want 4 (marks untouched)", got)
@@ -143,6 +143,68 @@ func TestApplySingleFlight(t *testing.T) {
 	again := nextRaw2.(Model)
 	if !again.state.Applying || again.applyDone {
 		t.Fatal("apply state must be untouched by keys while running")
+	}
+}
+
+func TestApplyOverlayIsExclusiveAndReturnsToOpeningTab(t *testing.T) {
+	m := modelWithMarks(t, "/p")
+	m = m.step(t, keyMsg(t, "g")) // plan preview tab
+	if m.activeTab().Kind != TabPlan {
+		t.Fatalf("active tab = %v, want plan", m.activeTab().Kind)
+	}
+	planIdx := m.tabIdx
+	tabCount := len(m.tabs)
+
+	nextRaw, cmd := m.Update(keyMsg(t, "g")) // start the run
+	m = nextRaw.(Model)
+	if !m.state.Applying {
+		t.Fatalf("apply did not start (notice=%q)", m.notice)
+	}
+	if len(m.tabs) != tabCount {
+		t.Fatalf("tabs = %d, want %d (the apply run must not add a strip entry)", len(m.tabs), tabCount)
+	}
+	if m.tabIdx != planIdx {
+		t.Fatalf("active tab moved to %d when the run started", m.tabIdx)
+	}
+
+	// While the run is in progress: tab movement and close keys are inert.
+	for _, k := range []string{"ctrl+h", "ctrl+l", "q"} {
+		m = m.step(t, keyMsg(t, k))
+	}
+	if !m.state.Applying || m.applyDone {
+		t.Fatal("keys must not touch the in-progress run")
+	}
+	if m.tabIdx != planIdx || len(m.tabs) != tabCount {
+		t.Fatalf("tab strip changed while applying (idx=%d tabs=%d)", m.tabIdx, len(m.tabs))
+	}
+
+	m = runApplyToDone(t, m, cmd)
+	if !m.applyDone {
+		t.Fatal("apply run did not reach the completion prompt")
+	}
+	if len(m.tabs) != tabCount || m.activeTab().Kind != TabPlan {
+		t.Fatalf("after the run: tabs=%d active=%v, want %d tabs with plan active", len(m.tabs), m.activeTab().Kind, tabCount)
+	}
+
+	// While the completion prompt is up: tab movement is still inert.
+	for _, k := range []string{"ctrl+h", "ctrl+l", "j"} {
+		m = m.step(t, keyMsg(t, k))
+	}
+	if !m.applyDone {
+		t.Fatal("stray keys must not dismiss the completion prompt")
+	}
+	if m.tabIdx != planIdx {
+		t.Fatalf("active tab moved to %d while the prompt was up", m.tabIdx)
+	}
+
+	// Even if the active tab changed mid-run, enter returns to the opening tab.
+	m.tabIdx = 0
+	m = m.step(t, keyMsg(t, "enter"))
+	if m.applyDone {
+		t.Fatal("enter must dismiss the completion prompt")
+	}
+	if m.activeTab().Kind != TabPlan || m.tabIdx != planIdx {
+		t.Fatalf("after enter: active tab = %v (idx %d), want plan (idx %d)", m.activeTab().Kind, m.tabIdx, planIdx)
 	}
 }
 
@@ -198,8 +260,8 @@ func TestApplyRefusedOnNonWritablePrefix(t *testing.T) {
 	if next.state.Applying {
 		t.Fatal("apply must not start on a non-writable prefix")
 	}
-	if next.screen != ScreenPlan {
-		t.Fatalf("screen = %v, want plan (still reviewing)", next.screen)
+	if next.activeTab().Kind != TabPlan {
+		t.Fatalf("active tab = %v, want plan (still reviewing)", next.activeTab().Kind)
 	}
 	if next.notice == "" || !strings.Contains(next.notice, "not writable") {
 		t.Fatalf("notice = %q, want an actionable writability message", next.notice)
