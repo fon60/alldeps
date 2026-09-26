@@ -130,12 +130,12 @@ func TestPlusMultipleEligibleDestinationsOpensPopup(t *testing.T) {
 	if m.overlay != OverlayTargets {
 		t.Fatalf("overlay = %v, want the install-target popup", m.overlay)
 	}
-	if len(m.installTargets) != 2 {
-		t.Fatalf("eligible destinations = %d, want 2", len(m.installTargets))
+	if len(m.targets) != 2 {
+		t.Fatalf("eligible destinations = %d, want 2", len(m.targets))
 	}
-	m = m.step(t, keyMsg(t, " ")) // select the first destination
+	m = m.step(t, keyMsg(t, "+")) // include the first destination
 	m = m.step(t, keyMsg(t, "j"))
-	m = m.step(t, keyMsg(t, " ")) // select the second as well
+	m = m.step(t, keyMsg(t, "+")) // include the second as well
 	m = m.step(t, keyMsg(t, "enter"))
 
 	if m.overlay != OverlayNone {
@@ -159,7 +159,7 @@ func TestPlusPopupCancelRecordsNothing(t *testing.T) {
 	if m.overlay != OverlayTargets {
 		t.Fatalf("overlay = %v, want the install-target popup", m.overlay)
 	}
-	m = m.step(t, keyMsg(t, " "))
+	m = m.step(t, keyMsg(t, "+")) // select something so a cancel is observable
 	m = m.step(t, keyMsg(t, "esc"))
 
 	if m.overlay != OverlayNone {

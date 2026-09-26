@@ -44,26 +44,33 @@ p() { /usr/bin/printf "$@" 2>/dev/null || true; }
   sleep 8
   p '+'
   sleep 2
-  # Install-target popup: select the first destination, move down, select the
-  # second one as well, then confirm.
-  p ' '
+  # Install-target popup: include the first destination with +, move down,
+  # include the second one as well, then confirm.
+  p '+'
   sleep 0.5
   p 'j'
   sleep 0.5
-  p ' '
+  p '+'
   sleep 0.5
   p '\r'
   sleep 2
   p 'g'
   sleep 3
   p 'g'
-  sleep 25
-  p '\r'
-  sleep 2
-  p 'q'
-  sleep 1
-  p 'y'
-  sleep 1
+  # Apply run: poll the completion prompt, dismiss it (back on the plan tab),
+  # close the plan tab, then quit from the list (confirming if marks remain).
+  # Keys sent while a batch is still running are ignored by the apply screen.
+  for i in 1 2 3 4 5 6; do
+    sleep 15
+    p '\r'
+    sleep 1
+    p 'q'
+    sleep 1
+    p 'q'
+    sleep 1
+    p 'y'
+    sleep 1
+  done
 } | env PATH="$PREFIX_A/bin:$PATH" NVM_DIR="$BASE" \
   script -qec "stty cols 80 rows 24; ./npmitude" /dev/null > "$OUT" 2>&1
 

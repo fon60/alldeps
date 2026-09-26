@@ -147,7 +147,7 @@ func TestHelpScreenListsAllKeysAndReturns(t *testing.T) {
 	m = m.step(t, keyMsg(t, "G")) // scroll to the bottom sections
 	out = render80x24(m)
 	for _, want := range []string{
-		"published versions (enter pins one)",
+		"published versions (+/- mark a version)",
 		"quit (confirms when marks are pending)",
 	} {
 		if !strings.Contains(out, want) {

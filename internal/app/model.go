@@ -48,6 +48,12 @@ const (
 	OverlayTargets
 )
 
+// Target-popup modes: what the OverlayTargets popup marks on confirm.
+const (
+	targetsInstall = iota
+	targetsRemove
+)
+
 // Tab is one open context: its kind, subject identity (Search: query;
 // Info/Versions/Readme/Resolver: package name; Help/Plan: none) and all the
 // per-kind state, so returning to a tab restores it exactly.
@@ -158,10 +164,12 @@ type Model struct {
 	applyCancel   context.CancelFunc // aborts the batch currently running
 	applyAborted  bool               // user pressed ctrl+c: the whole plan remainder is dropped
 
-	installName         string                  // package the install-target popup marks
-	installTargets      []ecosystem.Environment // eligible destinations in the popup
-	installTargetCursor int
-	installTargetSel    map[string]bool // destination IDs preselected/selected in the popup
+	targetsMode    int                     // targetsInstall or targetsRemove: what the target popup marks
+	targetName     string                  // package the target popup marks
+	targetsVersion string                  // pinned version for install mode ("" = latest); unused for remove
+	targets        []ecosystem.Environment // eligible destinations in the popup
+	targetCursor   int
+	targetSel      map[string]bool // destination IDs preselected/selected in the popup
 
 	quitConfirm bool // quit confirmation prompt is showing
 }
@@ -1474,32 +1482,94 @@ func (m *Model) syncVersionTop(idx int) {
 	}
 }
 
-// pinVersion marks the versions tab's package for install/upgrade at exactly
-// the selected version (spec: version history) and returns to the info tab of
-// the same package when one is open.
-func (m *Model) pinVersion() {
+// versionMarkInstall is the versions screen's + (design D1/D2): it marks the
+// package for install at exactly the cursor version — upgrade when already
+// installed on that destination — on every eligible environment: writable and
+// not carrying that exact version. One eligible environment applies directly,
+// several open the target popup; repeating the action clears the mark. It never
+// issues a removal.
+func (m *Model) versionMarkInstall() {
 	t := &m.tabs[m.tabIdx]
 	if t.Doc == nil || t.VerCursor >= len(t.Doc.Versions) {
 		return
 	}
 	v := t.Doc.Versions[t.VerCursor]
-	ps := m.state.Active()
-	if ps == nil {
-		return
+	var eligible []ecosystem.Environment
+	for _, e := range m.envs() {
+		if !m.eco().Writable(e) {
+			continue
+		}
+		if ps := m.state.Prefixes[e.ID]; ps != nil {
+			if p := ps.Packages[t.Name]; p != nil && p.InstalledVersion == v {
+				continue
+			}
+		}
+		eligible = append(eligible, e)
 	}
-	p := ps.Packages[t.Name]
-	if p == nil {
-		return
+	switch len(eligible) {
+	case 0:
+		m.notice = "no eligible destination to install " + t.Name + "@" + v + " into"
+	case 1:
+		e := eligible[0]
+		switch mk := m.setVersionInstallMark(e.ID, t.Name, v); mk {
+		case domain.MarkNone:
+			m.notice = fmt.Sprintf("%s: mark for %s cleared", t.Name, v)
+		case domain.MarkUpgrade:
+			m.notice = fmt.Sprintf("%s marked for upgrade to %s on %s", t.Name, v, displayPath(e.ID))
+		default:
+			m.notice = fmt.Sprintf("%s marked for install at %s on %s", t.Name, v, displayPath(e.ID))
+		}
+	default:
+		sel := map[string]bool{}
+		for _, e := range eligible {
+			if ps := m.state.Prefixes[e.ID]; ps != nil {
+				if p := ps.Packages[t.Name]; p != nil && versionMarkAt(p, m.activeManagerID, v) {
+					sel[e.ID] = true
+				}
+			}
+		}
+		m.openTargets(targetsInstall, t.Name, v, eligible, sel)
 	}
-	if p.Installed() {
-		p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkUpgrade, TargetVersion: v})
-		m.notice = fmt.Sprintf("%s marked for upgrade to %s", p.Name, v)
-	} else {
-		p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkInstall, TargetVersion: v})
-		m.notice = fmt.Sprintf("%s marked for install at %s", p.Name, v)
+}
+
+// versionMarkRemove is the versions screen's - (design D1/D2): it marks the
+// package for removal on every environment where it is installed — one applies
+// directly, several open the target popup; repeating cancels the mark. A
+// package installed nowhere is a no-op with a notice. It never issues an
+// install.
+func (m *Model) versionMarkRemove() {
+	t := &m.tabs[m.tabIdx]
+	var eligible []ecosystem.Environment
+	for _, e := range m.envs() {
+		if ps := m.state.Prefixes[e.ID]; ps != nil {
+			if p := ps.Packages[t.Name]; p != nil && p.Installed() {
+				eligible = append(eligible, e)
+			}
+		}
 	}
-	if ii := m.findTab(TabInfo, t.Name); ii >= 0 {
-		m.tabIdx = ii
+	switch len(eligible) {
+	case 0:
+		m.notice = t.Name + " is not installed in any environment — nothing to remove"
+	case 1:
+		e := eligible[0]
+		p := m.state.Prefixes[e.ID].Packages[t.Name]
+		if p.MarkFor(m.activeManagerID) == domain.MarkRemove {
+			p.RevertFor(m.activeManagerID)
+			m.notice = fmt.Sprintf("%s: removal mark cleared on %s", t.Name, displayPath(e.ID))
+		} else {
+			p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkRemove})
+			m.notice = fmt.Sprintf("%s marked for removal on %s", t.Name, displayPath(e.ID))
+		}
+	default:
+		sel := map[string]bool{}
+		for _, e := range eligible {
+			if ps := m.state.Prefixes[e.ID]; ps != nil {
+				if p := ps.Packages[t.Name]; p != nil && p.MarkFor(m.activeManagerID) == domain.MarkRemove {
+					sel[e.ID] = true
+				}
+			}
+		}
+		m.openTargets(targetsRemove, t.Name, "", eligible, sel)
 	}
 }
 
@@ -2145,16 +2215,66 @@ func (m *Model) markInstallTargets(name string) {
 	sel := map[string]bool{}
 	for _, e := range eligible {
 		if ps := m.state.Prefixes[e.ID]; ps != nil {
-			if p := ps.Packages[name]; p != nil && p.MarkFor(m.activeManagerID) == domain.MarkInstall {
+			if p := ps.Packages[name]; p != nil && versionMarkAt(p, m.activeManagerID, "") {
 				sel[e.ID] = true
 			}
 		}
 	}
-	m.installName = name
-	m.installTargets = eligible
-	m.installTargetSel = sel
-	m.installTargetCursor = 0
+	m.openTargets(targetsInstall, name, "", eligible, sel)
+}
+
+// openTargets raises the mode-aware target popup over the eligible
+// destinations with the preselected IDs starting selected.
+func (m *Model) openTargets(mode int, name, version string, eligible []ecosystem.Environment, sel map[string]bool) {
+	m.targetsMode = mode
+	m.targetName = name
+	m.targetsVersion = version
+	m.targets = eligible
+	m.targetSel = sel
+	m.targetCursor = 0
 	m.overlay = OverlayTargets
+}
+
+// versionMarkAt reports whether manager's pending mark on p is an install or
+// upgrade targeting exactly version ("" matches the unversioned latest).
+func versionMarkAt(p *domain.PkgState, manager, version string) bool {
+	mk := p.MarkFor(manager)
+	return (mk == domain.MarkInstall || mk == domain.MarkUpgrade) && p.TargetVersionFor(manager) == version
+}
+
+// setVersionInstallMark records the active manager's install mark on name in
+// one destination at exactly version — an upgrade mark when the package is
+// already installed there — creating the package row when needed. Repeating it
+// for the same version clears the mark again (toggle). It returns the
+// resulting mark (MarkNone when toggled off).
+func (m *Model) setVersionInstallMark(destID, name, version string) domain.Mark {
+	ps := m.state.Prefixes[destID]
+	if ps == nil {
+		ps = &domain.PrefixState{ID: destID, Packages: map[string]*domain.PkgState{}}
+		m.state.Prefixes[destID] = ps
+	}
+	p := ps.Packages[name]
+	if p == nil {
+		latest := ""
+		if aps := m.state.Active(); aps != nil {
+			if ap := aps.Packages[name]; ap != nil {
+				latest = ap.LatestVersion
+			}
+		}
+		p = &domain.PkgState{Name: name, Origin: domain.OriginSearch, LatestVersion: latest}
+		ps.Packages[name] = p
+	}
+	mk := domain.MarkInstall
+	if p.Installed() {
+		mk = domain.MarkUpgrade
+	}
+	cur := p.Marks[m.activeManagerID]
+	if cur.Mark == mk && cur.TargetVersion == version {
+		p.RevertFor(m.activeManagerID)
+		return domain.MarkNone
+	}
+	p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: mk, TargetVersion: version})
+	return mk
 }
 
 // setInstallMarkForDest records the active manager's install mark on name in

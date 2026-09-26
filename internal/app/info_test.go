@@ -78,7 +78,7 @@ func TestInfoScreenOfflineNotInstalledShowsNotice(t *testing.T) {
 	}
 }
 
-func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
+func TestVersionsPlusMarksInstalledAndNotInstalled(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha", "beta")
 	m.state.Prefixes["/p"].Packages["beta"].InstalledVersion = ""
 	m.state.Prefixes["/p"].Packages["beta"].Origin = domain.OriginSearch
@@ -90,23 +90,23 @@ func TestPinVersionInstalledAndNotInstalled(t *testing.T) {
 	m.tabs[m.tabIdx].Doc = &ecosystem.Doc{Versions: []string{"2.0.0", "1.5.0", "1.0.0"}}
 	m.tabs[m.tabIdx].VerCursor = 1 // 1.5.0
 
-	m = m.step(t, keyMsg(t, "enter"))
+	m = m.step(t, keyMsg(t, "+"))
 	a := m.state.Prefixes["/p"].Packages["alpha"]
 	if a.MarkFor("stub") != domain.MarkUpgrade || a.TargetVersionFor("stub") != "1.5.0" {
-		t.Fatalf("installed pin: mark=%v target=%q", a.MarkFor("stub"), a.TargetVersionFor("stub"))
+		t.Fatalf("installed +: mark=%v target=%q", a.MarkFor("stub"), a.TargetVersionFor("stub"))
 	}
-	if m.activeTab().Kind != TabInfo {
-		t.Fatal("pin should return to the info tab")
+	if m.activeTab().Kind != TabVersions {
+		t.Fatal("+ must stay on the versions screen (no auto-return)")
 	}
 
 	m.openTab(TabVersions, "beta")
 	m.tabs[m.tabIdx].Name = "beta"
 	m.tabs[m.tabIdx].Doc = &ecosystem.Doc{Versions: []string{"2.0.0", "1.5.0", "1.0.0"}}
 	m.tabs[m.tabIdx].VerCursor = 0 // 2.0.0
-	m = m.step(t, keyMsg(t, "enter"))
+	m = m.step(t, keyMsg(t, "+"))
 	b := m.state.Prefixes["/p"].Packages["beta"]
 	if b.MarkFor("stub") != domain.MarkInstall || b.TargetVersionFor("stub") != "2.0.0" {
-		t.Fatalf("not-installed pin: mark=%v target=%q", b.MarkFor("stub"), b.TargetVersionFor("stub"))
+		t.Fatalf("not-installed +: mark=%v target=%q", b.MarkFor("stub"), b.TargetVersionFor("stub"))
 	}
 }
 

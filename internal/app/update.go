@@ -605,49 +605,75 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateTargets handles keys on the install-target popup overlay:
-// multi-select the eligible destinations (space toggles) and confirm with
-// enter. Cancelling records nothing.
+// updateTargets handles keys on the mode-aware target popup overlay: + includes
+// the cursor destination in the action and - excludes/cancels it (polarity
+// follows the mode), enter/space confirm, esc/q cancel without recording
+// anything. The overlay is routed before tab dispatch, so none of these keys
+// reaches the screen underneath.
 func (m Model) updateTargets(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	n := len(m.installTargets)
+	n := len(m.targets)
 	switch msg.String() {
 	case "esc", "q":
 		m.overlay = OverlayNone
-		return m, nil
 	case "up", "k":
-		if m.installTargetCursor > 0 {
-			m.installTargetCursor--
+		if m.targetCursor > 0 {
+			m.targetCursor--
 		}
 	case "down", "j":
-		if m.installTargetCursor < n-1 {
-			m.installTargetCursor++
+		if m.targetCursor < n-1 {
+			m.targetCursor++
 		}
-	case " ":
-		if m.installTargetCursor < n {
-			id := m.installTargets[m.installTargetCursor].ID
-			m.installTargetSel[id] = !m.installTargetSel[id]
+	case "+", "-":
+		if m.targetCursor < n {
+			id := m.targets[m.targetCursor].ID
+			include := (msg.String() == "+") == (m.targetsMode == targetsInstall)
+			if include {
+				m.targetSel[id] = true
+			} else {
+				delete(m.targetSel, id)
+			}
 		}
-	case "enter":
+	case "enter", " ":
 		changed := 0
-		for _, e := range m.installTargets {
-			marked := false
+		for _, e := range m.targets {
+			var p *domain.PkgState
 			if ps := m.state.Prefixes[e.ID]; ps != nil {
-				if p := ps.Packages[m.installName]; p != nil && p.MarkFor(m.activeManagerID) == domain.MarkInstall {
-					marked = true
+				p = ps.Packages[m.targetName]
+			}
+			switch m.targetsMode {
+			case targetsInstall:
+				marked := p != nil && versionMarkAt(p, m.activeManagerID, m.targetsVersion)
+				switch {
+				case m.targetSel[e.ID] && !marked:
+					m.setVersionInstallMark(e.ID, m.targetName, m.targetsVersion)
+					changed++
+				case !m.targetSel[e.ID] && marked:
+					m.state.Revert(e.ID, m.targetName, m.activeManagerID)
+					changed++
+				}
+			case targetsRemove:
+				if p == nil {
+					continue
+				}
+				marked := p.MarkFor(m.activeManagerID) == domain.MarkRemove
+				switch {
+				case m.targetSel[e.ID] && !marked:
+					p.SetMarkEntry(m.activeManagerID, domain.MarkEntry{Mark: domain.MarkRemove})
+					changed++
+				case !m.targetSel[e.ID] && marked:
+					m.state.Revert(e.ID, m.targetName, m.activeManagerID)
+					changed++
 				}
 			}
-			switch {
-			case m.installTargetSel[e.ID] && !marked:
-				m.setInstallMarkForDest(e.ID, m.installName)
-				changed++
-			case !m.installTargetSel[e.ID] && marked:
-				m.state.Revert(e.ID, m.installName, m.activeManagerID)
-				changed++
-			}
 		}
-		if changed > 0 {
-			m.notice = fmt.Sprintf("%s: install mark updated on %d destination(s)", m.installName, changed)
-		} else {
+		switch {
+		case changed > 0 && m.targetsMode == targetsRemove:
+			m.notice = fmt.Sprintf("%s: removal mark updated on %d destination(s)", m.targetName, changed)
+		case changed > 0 && m.targetsVersion != "":
+			m.notice = fmt.Sprintf("%s@%s: install mark updated on %d destination(s)", m.targetName, m.targetsVersion, changed)
+		case changed > 0:
+			m.notice = fmt.Sprintf("%s: install mark updated on %d destination(s)", m.targetName, changed)
+		default:
 			m.notice = "no changes"
 		}
 		m.overlay = OverlayNone
@@ -749,8 +775,9 @@ func (m Model) updateInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateVersions handles keys on the versions tab: j/k move the cursor with a
-// following viewport, g/G jump to first/last (readme-view parity), enter pins
-// the version under the cursor.
+// following viewport, g/G jump to first/last (readme-view parity), + marks the
+// version under the cursor for install at exactly that version and - marks the
+// package for removal; both are toggles. enter/space do not mark (design D5).
 func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	t := &m.tabs[m.tabIdx]
 	n := 0
@@ -776,8 +803,10 @@ func (m Model) updateVersions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			t.VerCursor = n - 1
 			m.syncVersionTop(m.tabIdx)
 		}
-	case "enter", " ":
-		m.pinVersion()
+	case "+":
+		m.versionMarkInstall()
+	case "-":
+		m.versionMarkRemove()
 	}
 	return m, nil
 }

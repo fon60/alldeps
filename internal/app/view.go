@@ -189,7 +189,7 @@ func (m Model) screenHints() string {
 	case OverlayManager:
 		return "enter: select manager   esc/q: back"
 	case OverlayTargets:
-		return "space: toggle   enter: confirm   esc/q: cancel"
+		return m.targetsHint()
 	}
 	t := m.activeTab()
 	switch t.Kind {
@@ -203,7 +203,7 @@ func (m Model) screenHints() string {
 	case TabInfo:
 		return "[esc] back   [v] versions   [C] readme"
 	case TabVersions:
-		return "[enter] pin version   [j/k] move   [g/G] top/bottom   [esc] back"
+		return "[+] install this version   [-] remove   [g/G] top/bottom   [esc] back"
 	case TabReadme:
 		return "[j/k] scroll   [g/G] top/bottom   [q/esc] back"
 	case TabHelp:
@@ -263,27 +263,44 @@ func (m Model) managerBody() string {
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-// targetsBody renders the install-target popup: the eligible destinations of
-// the active manager with multi-select markers (x = selected).
+// targetsBody renders the mode-aware target popup: the eligible destinations of
+// the active manager with multi-select markers (x = selected) and the mode's
+// key legend.
 func (m Model) targetsBody() string {
 	bodyH := m.height - 3
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	lines := []string{titleStyle.Render("Install " + m.installName + " — choose destination(s)"), ""}
-	for i, e := range m.installTargets {
+	title := "Install " + m.targetName
+	if m.targetsVersion != "" {
+		title += "@" + m.targetsVersion
+	}
+	if m.targetsMode == targetsRemove {
+		title = "Remove " + m.targetName
+	}
+	lines := []string{titleStyle.Render(title + " — choose destination(s)"), ""}
+	for i, e := range m.targets {
 		marker := "  "
-		if m.installTargetSel[e.ID] {
+		if m.targetSel[e.ID] {
 			marker = "x "
 		}
 		line := marker + displayPath(e.ID)
-		if i == m.installTargetCursor {
+		if i == m.targetCursor {
 			line = cursorStyle.Render(line)
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", hintStyle.Render("space: toggle   enter: confirm   esc/q: cancel"))
+	lines = append(lines, "", hintStyle.Render(m.targetsHint()))
 	return lipgloss.NewStyle().Width(m.width).Height(bodyH).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// targetsHint is the key legend of the mode-aware target popup: + includes and
+// - excludes/cancels the cursor destination, polarity following the mode.
+func (m Model) targetsHint() string {
+	if m.targetsMode == targetsRemove {
+		return "-: mark removal   +: cancel it   enter/space: confirm   esc/q: cancel"
+	}
+	return "+: include   -: exclude   enter/space: confirm   esc/q: cancel"
 }
 
 // pickerRow renders one picker row as self-contained styled segments so the
@@ -830,7 +847,7 @@ var helpSections = []helpSection{
 	{title: "List", rows: [][2]string{
 		{"j/k, arrows", "move cursor"},
 		{"enter / d", "package info screen"},
-		{"v", "published versions of the highlighted package (enter pins one)"},
+		{"v", "published versions of the highlighted package (+/- mark a version)"},
 		{"g", "open the plan preview (press g again there to apply)"},
 		{"S", "cycle sort: name, version, size, state"},
 		{"a", "toggle visibility of automatic (A) packages"},
@@ -853,12 +870,13 @@ var helpSections = []helpSection{
 		{"j/k", "move the per-destination table cursor"},
 		{"+", "mark install on the destination under the cursor"},
 		{"-", "mark removal from the destination under the cursor"},
-		{"v", "published versions (enter pins one)"},
+		{"v", "published versions (+/- mark a version)"},
 		{"C", "README view"},
 	}},
-	{title: "Install targets", rows: [][2]string{
-		{"space", "toggle a destination's selection"},
-		{"enter", "confirm — one install mark per chosen destination"},
+	{title: "Target popup", rows: [][2]string{
+		{"+", "include the cursor destination in the action"},
+		{"-", "exclude/cancel it (polarity follows install vs removal)"},
+		{"enter / space", "confirm — one mark per chosen destination"},
 		{"esc/q", "cancel (no marks recorded)"},
 	}},
 	{title: "Plan screen", rows: [][2]string{
