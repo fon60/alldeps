@@ -23,12 +23,20 @@ type Info struct {
 }
 
 // Config makes detection testable: HomeDir overrides the user home, LookEnv
-// overrides environment lookups (NVM_DIR, FNM_DIR, VOLTA_HOME), and ActiveFn
-// overrides active-prefix resolution.
+// overrides environment lookups (NVM_DIR, FNM_DIR, VOLTA_HOME), Path
+// overrides $PATH, and ActiveFn overrides active-prefix resolution.
 type Config struct {
 	HomeDir  string
 	LookEnv  func(string) (string, bool)
+	Path     string
 	ActiveFn func(ctx context.Context) (string, error)
+}
+
+func (c *Config) path() string {
+	if c.Path != "" {
+		return c.Path
+	}
+	return os.Getenv("PATH")
 }
 
 func (c *Config) activeFn() func(context.Context) (string, error) {
@@ -64,10 +72,10 @@ func (c *Config) env(key, fallback string) string {
 
 var versionDirRE = regexp.MustCompile(`^v?(\d+(?:\.\d+)*)`)
 
-// Detect finds all Node prefixes: nvm, fnm, and volta installations plus the
-// active npm prefix. Each entry carries its Node version (where determinable)
-// and top-level global package count. Results are unique by path, sorted by
-// Node version descending.
+// Detect finds all Node prefixes: nvm, fnm, and volta installations, system
+// nodes found on PATH, and the active npm prefix. Each entry carries its Node
+// version (where determinable) and top-level global package count. Results are
+// unique by resolved real path, sorted by Node version descending.
 func Detect(ctx context.Context, cfg Config) ([]Info, error) {
 	var out []Info
 	seen := map[string]bool{}
@@ -113,6 +121,23 @@ func Detect(ctx context.Context, cfg Config) ([]Info, error) {
 				add(p, "volta", versionFromDir(v))
 			}
 		}
+	}
+
+	seenReal := map[string]bool{}
+	for _, info := range out {
+		seenReal[realPath(info.ID)] = true
+	}
+	for _, hit := range pathCandidates(cfg.path()) {
+		id := realPath(hit.prefix)
+		if seenReal[id] {
+			continue
+		}
+		version := nodeVersionOfBinary(ctx, hit.bin)
+		if version == "" {
+			continue
+		}
+		add(id, "system", version)
+		seenReal[id] = true
 	}
 
 	active, err := cfg.activeFn()(ctx)
@@ -163,6 +188,45 @@ func hasNode(prefixID string) bool {
 	return err == nil && !st.IsDir()
 }
 
+type pathHit struct {
+	prefix string // parent of the bin directory
+	bin    string // absolute path to the node/nodejs binary
+}
+
+// pathCandidates walks each directory on a PATH value and reports a candidate
+// Node prefix for every node/nodejs binary found in it. Directories are
+// resolved first so symlinked aliases (e.g. /bin -> usr/bin) yield the same
+// prefix as their target; unreadable or looping entries are skipped.
+func pathCandidates(pathEnv string) []pathHit {
+	var hits []pathHit
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			continue
+		}
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		for _, name := range []string{"node", "nodejs"} {
+			bin := filepath.Join(realDir, name)
+			st, err := os.Stat(bin)
+			if err != nil || !st.Mode().IsRegular() {
+				continue
+			}
+			hits = append(hits, pathHit{prefix: filepath.Dir(realDir), bin: bin})
+		}
+	}
+	return hits
+}
+
+func realPath(p string) string {
+	rp, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
+	}
+	return rp
+}
+
 func versionFromDir(name string) string {
 	if m := versionDirRE.FindStringSubmatch(name); m != nil {
 		return "v" + m[1]
@@ -172,9 +236,15 @@ func versionFromDir(name string) string {
 
 // nodeVersionOf asks the prefix's own node for its version.
 func nodeVersionOf(ctx context.Context, prefixID string) string {
+	return nodeVersionOfBinary(ctx, filepath.Join(prefixID, "bin", "node"))
+}
+
+// nodeVersionOfBinary asks a node binary at an absolute path for its version;
+// "" when the binary does not run or reports nothing.
+func nodeVersionOfBinary(ctx context.Context, binPath string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, filepath.Join(prefixID, "bin", "node"), "-p", "process.versions.node").Output()
+	out, err := exec.CommandContext(ctx, binPath, "-p", "process.versions.node").Output()
 	if err != nil {
 		return ""
 	}

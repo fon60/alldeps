@@ -131,7 +131,9 @@ func TestDiscoverAgainstNVMLayout(t *testing.T) {
 	t.Setenv("NVM_DIR", base)
 	t.Setenv("FNM_DIR", filepath.Join(base, "no-fnm"))
 	t.Setenv("VOLTA_HOME", filepath.Join(base, "no-volta"))
-	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// PATH is only the fake bin dir so the real machine's node binaries are
+	// not picked up by the PATH scan (keeps the test hermetic).
+	t.Setenv("PATH", fakebin)
 
 	envs, err := New().Discover(context.Background())
 	if err != nil {
