@@ -16,7 +16,7 @@ const listFixture = `{"Path":"example.com/fixture","Version":"(devel)","Main":tr
 {"Path":"github.com/other/gamma","Version":"v2.0.0","Indirect":true}
 `
 
-func TestListInstalledDirectOnlyWithResolvedVersions(t *testing.T) {
+func TestListInstalledFullBuildListWithResolvedVersions(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "list.json")
 	if err := os.WriteFile(fixture, []byte(listFixture), 0o644); err != nil {
 		t.Fatal(err)
@@ -29,21 +29,36 @@ func TestListInstalledDirectOnlyWithResolvedVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{}
+	got := map[string]ecosystem.Package{}
 	for _, p := range pkgs {
-		got[p.Name] = p.Version
+		got[p.Name] = p
 	}
-	want := map[string]string{
-		"github.com/direct/alpha": "v1.2.0",
-		"github.com/direct/beta":  "v0.3.1",
+	want := map[string]struct {
+		version   string
+		automatic bool
+	}{
+		"github.com/direct/alpha":    {"v1.2.0", false},
+		"github.com/direct/beta":     {"v0.3.1", false},
+		"golang.org/x/indirect":      {"v0.4.0", true},
+		"github.com/other/gamma":     {"v2.0.0", true},
 	}
 	if len(got) != len(want) {
-		t.Fatalf("got %d packages %v, want exactly %v (main and indirect excluded)", len(got), got, want)
+		t.Fatalf("got %d packages %v, want exactly %d (indirect listed, main excluded)", len(got), got, len(want))
 	}
-	for name, v := range want {
-		if got[name] != v {
-			t.Fatalf("%s version = %q, want resolved %q", name, got[name], v)
+	for name, w := range want {
+		p, ok := got[name]
+		if !ok {
+			t.Fatalf("%s missing from the list", name)
 		}
+		if p.Version != w.version {
+			t.Fatalf("%s version = %q, want resolved %q", name, p.Version, w.version)
+		}
+		if p.Automatic != w.automatic {
+			t.Fatalf("%s automatic = %v, want %v", name, p.Automatic, w.automatic)
+		}
+	}
+	if _, ok := got["example.com/fixture"]; ok {
+		t.Fatal("the main module must not be listed")
 	}
 
 	invs := readGoInvocations(t, logFile)

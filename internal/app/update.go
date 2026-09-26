@@ -258,6 +258,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									Name:          p.Name,
 									LatestVersion: p.LatestVersion,
 									Description:   p.Description,
+									Automatic:     p.Automatic,
 									Origin:        p.Origin,
 									Marks:         p.Marks,
 								}
@@ -497,6 +498,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state.ClearAllMarks(e.ID, m.activeManagerID)
 		}
 		m.notice = "all marks cleared"
+	case "a":
+		m.manualOnly = !m.manualOnly
+		m.clampCursor()
 	case "v":
 		u := m.selectedUnified()
 		if u == nil {

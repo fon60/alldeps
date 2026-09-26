@@ -34,7 +34,7 @@ func TestSearchMergeNoDuplicateInstalled(t *testing.T) {
 		t.Fatalf("package count = %d, want 2 (no duplicate for alpha)", len(ps.Packages))
 	}
 	fresh := ps.Packages["brand-new"]
-	if fresh == nil || fresh.Origin != domain.OriginSearch || fresh.FlagFor("stub") != "p*" {
+	if fresh == nil || fresh.Origin != domain.OriginSearch || fresh.FlagFor("stub") != "p  " {
 		t.Fatalf("new search row wrong: %+v", fresh)
 	}
 	if fresh.LatestVersion != "3.0.0" || fresh.Description != "fresh" {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,11 +19,13 @@ import (
 	"npmitude/internal/sizes"
 )
 
-// ParsedPkg is one top-level global package as reported by npm ls.
+// ParsedPkg is one package of the installed tree as reported by npm ls: a
+// top-level (direct) name or a nested-only (automatic) dependency.
 type ParsedPkg struct {
-	Name    string
-	Version string
-	Broken  bool // subtree contains missing/invalid dependencies
+	Name      string
+	Version   string
+	Broken    bool // subtree contains missing/invalid dependencies
+	Automatic bool // reachable only as a nested dependency, not a top-level name
 }
 
 // invalidFlag accepts npm's per-node "invalid" field. It is a boolean for
@@ -89,8 +92,10 @@ func (n *lsNode) subtreeBroken() bool {
 	return false
 }
 
-// ParseLS parses the JSON output of `npm ls -g --all --json` into top-level
-// packages with broken flags derived from subtree validity.
+// ParseLS parses the JSON output of `npm ls -g --all --json` into one row per
+// unique package name across the full tree: top-level names are direct,
+// nested-only names automatic. Broken flags derive from subtree validity;
+// nodes without a version (missing packages) yield no row.
 func ParseLS(data []byte) (map[string]ParsedPkg, error) {
 	var out lsOutput
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -98,16 +103,36 @@ func ParseLS(data []byte) (map[string]ParsedPkg, error) {
 	}
 	pkgs := make(map[string]ParsedPkg, len(out.Dependencies))
 	for name, node := range out.Dependencies {
-		if node == nil {
+		if node == nil || node.Version == "" {
 			continue
 		}
-		pkgs[name] = ParsedPkg{
-			Name:    name,
-			Version: node.Version,
-			Broken:  node.subtreeBroken(),
-		}
+		pkgs[name] = ParsedPkg{Name: name, Version: node.Version, Broken: node.subtreeBroken()}
 	}
+	walkLSTree(out.Dependencies, pkgs)
 	return pkgs, nil
+}
+
+// walkLSTree descends the full dependency tree and records names not yet
+// listed (reachable only as nested dependencies) as automatic. Top-level
+// names were recorded first, so they stay direct even when nested elsewhere.
+// Names are visited in sorted order for deterministic first-occurrence
+// selection of version and broken flag.
+func walkLSTree(deps map[string]*lsNode, out map[string]ParsedPkg) {
+	names := make([]string, 0, len(deps))
+	for name := range deps {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		node := deps[name]
+		if node == nil || node.Version == "" {
+			continue
+		}
+		if _, ok := out[name]; !ok {
+			out[name] = ParsedPkg{Name: name, Version: node.Version, Broken: node.subtreeBroken(), Automatic: true}
+		}
+		walkLSTree(node.Deps, out)
+	}
 }
 
 // NPMCommand returns the argv that launches prefixID's npm. A prefix with the

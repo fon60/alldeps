@@ -58,7 +58,7 @@ func TestVersionsColumnsInstalledInSeveralEnvs(t *testing.T) {
 
 	// Installed in two environments: state i, headline env v22.0.0 with a +1
 	// presence counter, and the measured size wins over the unpacked one.
-	wantInstalled := padRight("i*", colFlag) +
+	wantInstalled := padRight("i  ", colFlag) +
 		padRight("1.0.0", verColVersion) +
 		padRight("2.0K", colSize) +
 		padRight("v22.0.0+1", whereW)
@@ -67,7 +67,7 @@ func TestVersionsColumnsInstalledInSeveralEnvs(t *testing.T) {
 	}
 
 	// Not installed anywhere: state p, absent indicator, registry unpacked size.
-	wantLatest := padRight("p*", colFlag) +
+	wantLatest := padRight("p  ", colFlag) +
 		padRight("2.0.0", verColVersion) +
 		padRight("47.1K", colSize) +
 		padRight("-", whereW)
@@ -76,7 +76,7 @@ func TestVersionsColumnsInstalledInSeveralEnvs(t *testing.T) {
 	}
 
 	// No size source at all: the unknown indicator.
-	wantUnknown := padRight("p*", colFlag) +
+	wantUnknown := padRight("p  ", colFlag) +
 		padRight("1.5.0", verColVersion) +
 		padRight("…", colSize) +
 		padRight("-", whereW)
@@ -104,7 +104,7 @@ func TestVersionsFlagActionCharPerMarkShape(t *testing.T) {
 				p.Origin = domain.OriginSearch
 				p.SetMarkEntry("stub", domain.MarkEntry{Mark: domain.MarkInstall, TargetVersion: "1.2.3"})
 			},
-			wantTarget: [][2]string{{"1.2.3", "p+"}},
+			wantTarget: [][2]string{{"1.2.3", "p +"}},
 		},
 		{
 			name: "upgrade at pinned version",
@@ -112,7 +112,7 @@ func TestVersionsFlagActionCharPerMarkShape(t *testing.T) {
 				m.state.Prefixes["/p"].Packages["alpha"].SetMarkEntry("stub", domain.MarkEntry{Mark: domain.MarkUpgrade, TargetVersion: "1.5.0"})
 			},
 			// 1.5.0 is not installed anywhere yet, so its state char stays p.
-			wantTarget: [][2]string{{"1.5.0", "pu"}},
+			wantTarget: [][2]string{{"1.5.0", "p u"}},
 		},
 		{
 			name: "install unversioned targets the latest dist-tag",
@@ -122,14 +122,14 @@ func TestVersionsFlagActionCharPerMarkShape(t *testing.T) {
 				p.Origin = domain.OriginSearch
 				p.SetMarkEntry("stub", domain.MarkEntry{Mark: domain.MarkInstall})
 			},
-			wantTarget: [][2]string{{"2.0.0", "p+"}},
+			wantTarget: [][2]string{{"2.0.0", "p +"}},
 		},
 		{
 			name: "remove targets the active environment's installed version",
 			mutate: func(m *Model) {
 				m.state.Prefixes["/p"].Packages["alpha"].SetMarkEntry("stub", domain.MarkEntry{Mark: domain.MarkRemove})
 			},
-			wantTarget: [][2]string{{"1.0.0", "i-"}},
+			wantTarget: [][2]string{{"1.0.0", "i -"}},
 		},
 	}
 	for _, tc := range cases {

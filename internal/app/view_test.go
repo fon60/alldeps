@@ -139,6 +139,7 @@ func TestHelpScreenListsAllKeysAndReturns(t *testing.T) {
 	// section sits below the fold until scrolled.
 	m = m.step(t, keyMsg(t, "j"))
 	m = m.step(t, keyMsg(t, "j"))
+	m = m.step(t, keyMsg(t, "j"))
 	if out := render80x24(m); !strings.Contains(out, "j loads more at the end") {
 		t.Errorf("help screen (scrolled) missing %q", "j loads more at the end")
 	}

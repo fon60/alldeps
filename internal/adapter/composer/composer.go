@@ -83,10 +83,12 @@ type installedJSON struct {
 	} `json:"packages"`
 }
 
-// ListInstalled shows the project's direct dependencies (keys of composer.json
-// require) with their exact versions as recorded in installed.json. A missing
-// vendor directory yields an empty list — operations still work, composer
-// creates vendor on first require.
+// ListInstalled shows every installed package from vendor/composer/installed.json
+// with its exact version: a name declared in composer.json require is direct,
+// the rest were pulled in automatically. Platform/virtual requirements (php,
+// ext-*) are not installed packages and never appear as rows. A missing vendor
+// directory yields an empty list — operations still work, composer creates
+// vendor on first require.
 func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment) ([]ecosystem.Package, error) {
 	direct, err := directRequires(e.root)
 	if err != nil {
@@ -105,11 +107,18 @@ func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment
 	}
 	out := make([]ecosystem.Package, 0, len(inst.Packages))
 	for _, p := range inst.Packages {
-		if direct[p.Name] {
-			out = append(out, ecosystem.Package{Name: p.Name, Version: p.Version})
+		if isPlatformRequirement(p.Name) {
+			continue
 		}
+		out = append(out, ecosystem.Package{Name: p.Name, Version: p.Version, Automatic: !direct[p.Name]})
 	}
 	return out, nil
+}
+
+// isPlatformRequirement reports whether name is a composer platform/virtual
+// requirement (php, ext-*) rather than an installable package.
+func isPlatformRequirement(name string) bool {
+	return name == "php" || strings.HasPrefix(name, "ext-")
 }
 
 // directRequires returns the keys of composer.json's require section.

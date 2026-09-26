@@ -44,6 +44,7 @@ type Package struct {
 	Name      string
 	Version   string
 	Unhealthy bool // generic health flag (e.g. broken dependency tree)
+	Automatic bool // installed as a dependency, not directly by the user
 }
 
 // Hit is one search result from the ecosystem's package index.

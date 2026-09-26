@@ -63,11 +63,11 @@ func TestParseLSimple(t *testing.T) {
 	if len(pkgs) != 2 {
 		t.Fatalf("got %d packages, want 2", len(pkgs))
 	}
-	if pkgs["alpha"].Version != "1.0.0" || pkgs["alpha"].Broken {
-		t.Fatalf("alpha = %+v", pkgs["alpha"])
+	if pkgs["alpha"].Version != "1.0.0" || pkgs["alpha"].Broken || pkgs["alpha"].Automatic {
+		t.Fatalf("alpha = %+v, want 1.0.0 healthy direct", pkgs["alpha"])
 	}
-	if pkgs["beta"].Version != "2.3.4" || pkgs["beta"].Broken {
-		t.Fatalf("beta = %+v", pkgs["beta"])
+	if pkgs["beta"].Version != "2.3.4" || pkgs["beta"].Broken || pkgs["beta"].Automatic {
+		t.Fatalf("beta = %+v, want 2.3.4 healthy direct", pkgs["beta"])
 	}
 }
 
@@ -85,8 +85,68 @@ func TestParseLSMissingDependency(t *testing.T) {
 	if pkgs["npm"].Broken {
 		t.Fatal("npm should not be broken")
 	}
-	if len(pkgs) != 3 {
-		t.Fatalf("got %d packages, want 3", len(pkgs))
+	// The nested semver under npm is now listed as automatic; the missing
+	// ghost (no version) yields no row.
+	if len(pkgs) != 4 {
+		t.Fatalf("got %d packages, want 4: %+v", len(pkgs), pkgs)
+	}
+	if p := pkgs["semver"]; !p.Automatic || p.Version != "7.8.5" || p.Broken {
+		t.Fatalf("semver = %+v, want automatic 7.8.5 healthy", p)
+	}
+	if _, ok := pkgs["ghost"]; ok {
+		t.Fatal("missing ghost must not be listed (it has no installed version)")
+	}
+}
+
+// nestedTreeFixture exercises the full-tree walk: top-level names are direct
+// even when they also appear nested, nested-only names are automatic, and the
+// broken flag follows each name's own subtree.
+const nestedTreeFixture = `{
+  "name": "lib",
+  "dependencies": {
+    "root-a": {
+      "version": "1.0.0",
+      "dependencies": {
+        "shared": { "version": "0.5.0" },
+        "only-nested": {
+          "version": "2.0.0",
+          "dependencies": { "deep-missing": { "required": "^1.0.0", "missing": true } }
+        }
+      }
+    },
+    "root-b": {
+      "version": "3.0.0",
+      "dependencies": { "shared": { "version": "0.6.0" } }
+    },
+    "shared": { "version": "0.7.0" }
+  }
+}`
+
+func TestParseLFullTreeUniqueNames(t *testing.T) {
+	pkgs, err := ParseLS([]byte(nestedTreeFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkgs) != 4 {
+		t.Fatalf("got %d packages, want 4 (one per unique name): %+v", len(pkgs), pkgs)
+	}
+	// root-a's subtree reaches the missing deep-missing, so it stays broken
+	// (the existing per-subtree Broken semantics are preserved).
+	if p := pkgs["root-a"]; p.Automatic || p.Version != "1.0.0" || !p.Broken {
+		t.Fatalf("root-a = %+v, want direct 1.0.0 broken", p)
+	}
+	if p := pkgs["root-b"]; p.Automatic || p.Version != "3.0.0" {
+		t.Fatalf("root-b = %+v, want direct 3.0.0", p)
+	}
+	// shared is a top-level name: direct, at its own version, even though it
+	// also appears nested under root-a and root-b.
+	if p := pkgs["shared"]; p.Automatic || p.Version != "0.7.0" {
+		t.Fatalf("shared = %+v, want direct 0.7.0 (top-level wins)", p)
+	}
+	// only-nested is reachable solely as a dependency and carries its own
+	// missing-dep breakage.
+	if p := pkgs["only-nested"]; !p.Automatic || p.Version != "2.0.0" || !p.Broken {
+		t.Fatalf("only-nested = %+v, want automatic 2.0.0 broken", p)
 	}
 }
 

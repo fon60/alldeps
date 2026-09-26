@@ -71,17 +71,20 @@ func TestListInstalledAgainstRecordedLS(t *testing.T) {
 	for _, p := range pkgs {
 		byName[p.Name] = p
 	}
-	if len(pkgs) != 3 {
-		t.Fatalf("got %d packages, want 3: %+v", len(pkgs), pkgs)
+	if len(pkgs) != 4 {
+		t.Fatalf("got %d packages, want 4 (nested peer-x included): %+v", len(pkgs), pkgs)
 	}
-	if p := byName["pad-left"]; p.Version != "2.3.0" || p.Unhealthy {
-		t.Fatalf("pad-left = %+v, want 2.3.0 healthy", p)
+	if p := byName["pad-left"]; p.Version != "2.3.0" || p.Unhealthy || p.Automatic {
+		t.Fatalf("pad-left = %+v, want 2.3.0 healthy direct", p)
 	}
-	if p := byName["left-pad"]; !p.Unhealthy {
-		t.Fatalf("left-pad = %+v, want unhealthy (missing)", p)
+	if p := byName["left-pad"]; !p.Unhealthy || p.Automatic {
+		t.Fatalf("left-pad = %+v, want unhealthy (missing) direct", p)
 	}
-	if p := byName["deep"]; !p.Unhealthy {
-		t.Fatalf("deep = %+v, want unhealthy (invalid nested dep)", p)
+	if p := byName["deep"]; !p.Unhealthy || p.Automatic {
+		t.Fatalf("deep = %+v, want unhealthy (invalid nested dep) direct", p)
+	}
+	if p := byName["peer-x"]; !p.Automatic || p.Version != "0.0.1" {
+		t.Fatalf("peer-x = %+v, want automatic transitive dependency at 0.0.1", p)
 	}
 }
 

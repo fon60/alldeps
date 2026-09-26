@@ -189,8 +189,8 @@ func TestProjectSameNameAcrossAdaptersNotConflated(t *testing.T) {
 	if len(rows) != 1 || rows[0].Name != "helper" {
 		t.Fatalf("composer rows = %+v, want the single helper row", rows)
 	}
-	if got := rows[0].Flag("composer"); got != "i*" {
-		t.Fatalf("composer helper flag = %q, want i* (no mark carried over)", got)
+	if got := rows[0].Flag("composer"); got != "i  " {
+		t.Fatalf("composer helper flag = %q, want i (blank auto/action)", got)
 	}
 	if got := npmPS.Packages["helper"].MarkFor("npm"); got != domain.MarkRemove {
 		t.Fatalf("npm helper mark after switch = %v, want MarkRemove kept", got)

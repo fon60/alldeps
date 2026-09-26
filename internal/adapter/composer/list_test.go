@@ -49,7 +49,7 @@ func writeInstalled(t *testing.T, root, content string) {
 	}
 }
 
-func TestListInstalledDirectDepsWithExactVersions(t *testing.T) {
+func TestListInstalledFullSetWithExactVersions(t *testing.T) {
 	root := writeProject(t, `{"require":{"psr/log":"^3.0","vendor/alpha":"~1.2","php":"^8.1"}}`)
 	writeInstalled(t, root, installedFixture)
 
@@ -57,21 +57,35 @@ func TestListInstalledDirectDepsWithExactVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{}
+	got := map[string]ecosystem.Package{}
 	for _, p := range pkgs {
-		got[p.Name] = p.Version
+		got[p.Name] = p
 	}
-	want := map[string]string{
-		"psr/log":      "3.0.2",
-		"vendor/alpha": "1.2.3",
+	want := map[string]struct {
+		version   string
+		automatic bool
+	}{
+		"psr/log":          {"3.0.2", false},
+		"vendor/alpha":     {"1.2.3", false},
+		"vendor/transitive": {"2.0.0", true},
 	}
 	if len(got) != len(want) {
-		t.Fatalf("got %d packages %v, want exactly %v (transitive and platform entries excluded)", len(got), got, want)
+		t.Fatalf("got %d packages %v, want exactly %d (transitive listed, platform reqs absent)", len(got), got, len(want))
 	}
-	for name, v := range want {
-		if got[name] != v {
-			t.Fatalf("%s version = %q, want the exact installed %q (not the declared constraint)", name, got[name], v)
+	for name, w := range want {
+		p, ok := got[name]
+		if !ok {
+			t.Fatalf("%s missing from the list", name)
 		}
+		if p.Version != w.version {
+			t.Fatalf("%s version = %q, want the exact installed %q (not the declared constraint)", name, p.Version, w.version)
+		}
+		if p.Automatic != w.automatic {
+			t.Fatalf("%s automatic = %v, want %v", name, p.Automatic, w.automatic)
+		}
+	}
+	if _, ok := got["php"]; ok {
+		t.Fatal("platform requirement php must not be listed as a row")
 	}
 }
 

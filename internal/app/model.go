@@ -131,6 +131,7 @@ type Model struct {
 	hostname        string
 	notice          string
 	filterPred      filter.Predicate
+	manualOnly      bool // hide automatically installed (A) rows; false = show all
 	prompt          *promptState
 	pickerCursor    int
 	pickerLocked    map[string]bool // env IDs held by another live instance
@@ -499,7 +500,7 @@ func (m Model) searchCmd(prefixID, query string, from int) tea.Cmd {
 func toPkgStates(pkgs []ecosystem.Package) map[string]*domain.PkgState {
 	out := make(map[string]*domain.PkgState, len(pkgs))
 	for _, p := range pkgs {
-		out[p.Name] = &domain.PkgState{Name: p.Name, InstalledVersion: p.Version, Unhealthy: p.Unhealthy, Origin: domain.OriginInstalled}
+		out[p.Name] = &domain.PkgState{Name: p.Name, InstalledVersion: p.Version, Unhealthy: p.Unhealthy, Automatic: p.Automatic, Origin: domain.OriginInstalled}
 	}
 	return out
 }
@@ -1904,12 +1905,25 @@ func (m Model) displayRows() []domain.UnifiedRow {
 	return m.tabRows(m.activeTab())
 }
 
-// tabRows is the displayed rows of one list-like tab.
+// tabRows is the displayed rows of one list-like tab; the manual-only view
+// drops automatic (A) rows after every other filter has applied.
 func (m Model) tabRows(t Tab) []domain.UnifiedRow {
+	var rows []domain.UnifiedRow
 	if t.Kind == TabSearch {
-		return m.searchDisplayRows(t)
+		rows = m.searchDisplayRows(t)
+	} else {
+		rows = m.unifiedDisplayRows()
 	}
-	return m.unifiedDisplayRows()
+	if m.manualOnly {
+		kept := make([]domain.UnifiedRow, 0, len(rows))
+		for _, u := range rows {
+			if !u.Automatic() {
+				kept = append(kept, u)
+			}
+		}
+		rows = kept
+	}
+	return rows
 }
 
 // activePrefixes returns the loaded states and rank table of every

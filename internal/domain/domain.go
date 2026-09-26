@@ -58,6 +58,7 @@ type PkgState struct {
 	LatestVersion    string // from registry, TTL-cached; "" when unknown
 	SizeBytes        *int64 // background-measured; nil until known
 	Unhealthy        bool   // generic health flag set by the adapter (e.g. broken deps)
+	Automatic        bool   // installed as a dependency, not directly by the user
 	Origin           Origin
 	Marks            map[string]MarkEntry // keyed by manager id; nil = none
 	Description      string
@@ -138,6 +139,15 @@ func (p *PkgState) StateChar() rune {
 	}
 }
 
+// AutoChar is the flag's auto slot: A when the package was installed
+// automatically as a dependency, a space when it was installed directly.
+func (p *PkgState) AutoChar() rune {
+	if p.Automatic {
+		return 'A'
+	}
+	return ' '
+}
+
 // ActionCharFor is manager's pending-action flag character.
 func (p *PkgState) ActionCharFor(manager string) rune {
 	return actionChar(p.MarkFor(manager))
@@ -154,13 +164,14 @@ func actionChar(mk Mark) rune {
 	case MarkHold:
 		return 'h'
 	default:
-		return '*'
+		return ' '
 	}
 }
 
-// FlagFor is the two-character state/action flag for one manager (e.g. "i-").
+// FlagFor is the three-character <state><auto><action> flag for one manager
+// (e.g. "i -", "iA "). Empty slots render as spaces.
 func (p *PkgState) FlagFor(manager string) string {
-	return string(p.StateChar()) + string(p.ActionCharFor(manager))
+	return string(p.StateChar()) + string(p.AutoChar()) + string(p.ActionCharFor(manager))
 }
 
 // chosenResolution records a resolution option the user picked for a

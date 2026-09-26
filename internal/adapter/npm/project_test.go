@@ -139,8 +139,10 @@ func TestProjectListInstalledUsesLocalLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pkgs) != 3 {
-		t.Fatalf("got %d packages, want 3: %+v", len(pkgs), pkgs)
+	// The full tree is listed: the three top-level packages plus the nested
+	// peer-x as automatic.
+	if len(pkgs) != 4 {
+		t.Fatalf("got %d packages, want 4 (nested dependency included): %+v", len(pkgs), pkgs)
 	}
 }
 

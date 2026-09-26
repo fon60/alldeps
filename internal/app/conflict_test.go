@@ -89,11 +89,11 @@ func TestStubReportedConflictSurfacesForPackage(t *testing.T) {
 	}
 
 	out := render80x24(m)
-	// beta is a search-origin row (state p), so its conflicted flag cell is p*!.
-	if !strings.Contains(out, "p*!") {
+	// beta is a search-origin row (state p), so its conflicted flag cell is "p  !".
+	if !strings.Contains(out, "p  !") {
 		t.Fatalf("conflicted row beta must carry the distinct conflict marker in its flag cell:\n%s", out)
 	}
-	if strings.Contains(out, "i*!") {
+	if strings.Contains(out, "i  !") {
 		t.Fatalf("unconflicted row gamma must not carry the conflict marker:\n%s", out)
 	}
 }
@@ -407,7 +407,7 @@ func TestDedupeSurfacesRedundantCopies(t *testing.T) {
 	}
 
 	out := render80x24(m)
-	if !strings.Contains(out, "i*!") {
+	if !strings.Contains(out, "i  !") {
 		t.Fatalf("the unified row of the redundant package must carry the conflict marker:\n%s", out)
 	}
 }

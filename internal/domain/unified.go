@@ -40,6 +40,17 @@ func (u *UnifiedRow) Upgradable() bool {
 	return false
 }
 
+// Automatic reports whether any installed copy was pulled in automatically as
+// a dependency.
+func (u *UnifiedRow) Automatic() bool {
+	for _, p := range u.copies {
+		if p.Automatic {
+			return true
+		}
+	}
+	return u.Row != nil && u.Row.Automatic
+}
+
 // StateChar is the aggregated state flag character: b when any copy is
 // unhealthy, i when installed anywhere, p otherwise.
 func (u *UnifiedRow) StateChar() rune {
@@ -64,10 +75,14 @@ func (u *UnifiedRow) ActionSummary(manager string) rune {
 	return actionChar(best)
 }
 
-// Flag is the two-character state/action flag of the aggregated row for one
-// manager (e.g. "i+", "p*").
+// Flag is the three-character <state><auto><action> flag of the aggregated
+// row for one manager (e.g. "i +", "p  "). Empty slots render as spaces.
 func (u *UnifiedRow) Flag(manager string) string {
-	return string(u.StateChar()) + string(u.ActionSummary(manager))
+	auto := ' '
+	if u.Automatic() {
+		auto = 'A'
+	}
+	return string(u.StateChar()) + string(auto) + string(u.ActionSummary(manager))
 }
 
 // SortVersion is the version used when sorting unified rows: the headline's

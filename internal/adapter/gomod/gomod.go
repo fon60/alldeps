@@ -142,6 +142,9 @@ func (e *Ecosystem) listModules(ctx context.Context, updates bool) ([]goModule, 
 	return out, nil
 }
 
+// ListInstalled shows every module of the build list with its resolved (MVS-
+// selected) version: indirect modules are automatic, the main module is never
+// listed.
 func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment) ([]ecosystem.Package, error) {
 	modules, err := e.listModules(ctx, false)
 	if err != nil {
@@ -149,10 +152,10 @@ func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment
 	}
 	out := make([]ecosystem.Package, 0, len(modules))
 	for _, m := range modules {
-		if m.Main || m.Indirect {
+		if m.Main {
 			continue
 		}
-		out = append(out, ecosystem.Package{Name: m.Path, Version: m.Version})
+		out = append(out, ecosystem.Package{Name: m.Path, Version: m.Version, Automatic: m.Indirect})
 	}
 	return out, nil
 }

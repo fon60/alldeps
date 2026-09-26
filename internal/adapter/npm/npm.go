@@ -171,7 +171,7 @@ func (e *Ecosystem) ListInstalled(ctx context.Context, env ecosystem.Environment
 	}
 	out := make([]ecosystem.Package, 0, len(parsed))
 	for _, p := range parsed {
-		out = append(out, ecosystem.Package{Name: p.Name, Version: p.Version, Unhealthy: p.Broken})
+		out = append(out, ecosystem.Package{Name: p.Name, Version: p.Version, Unhealthy: p.Broken, Automatic: p.Automatic})
 	}
 	return out, nil
 }

@@ -16,7 +16,8 @@ type refLS struct {
 }
 
 // TestLSGlobalRealPrefix verifies against the machine's active npm prefix that
-// LSGlobal lists exactly its globals.
+// LSGlobal lists every top-level global (direct) plus its transitive
+// dependencies (automatic), with versions matching the top-level reference.
 func TestLSGlobalRealPrefix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -43,31 +44,28 @@ func TestLSGlobalRealPrefix(t *testing.T) {
 		t.Fatalf("parse reference: %v", err)
 	}
 
-	gotNames := make([]string, 0, len(got))
-	for name, p := range got {
-		gotNames = append(gotNames, name)
-		want, ok := ref.Dependencies[name]
+	for name, want := range ref.Dependencies {
+		p, ok := got[name]
 		if !ok {
-			t.Errorf("unexpected package %q", name)
+			t.Errorf("top-level global %q missing from LSGlobal", name)
 			continue
+		}
+		if p.Automatic {
+			t.Errorf("%s: top-level global must be direct, not automatic", name)
 		}
 		if p.Version != want.Version {
 			t.Errorf("%s: version %q, want %q", name, p.Version, want.Version)
 		}
 	}
-	sort.Strings(gotNames)
-	refNames := make([]string, 0, len(ref.Dependencies))
-	for name := range ref.Dependencies {
-		refNames = append(refNames, name)
-	}
-	sort.Strings(refNames)
-	if len(gotNames) != len(refNames) {
-		t.Fatalf("LSGlobal found %v, reference has %v", gotNames, refNames)
-	}
-	for i := range gotNames {
-		if gotNames[i] != refNames[i] {
-			t.Fatalf("package set mismatch: %v vs %v", gotNames, refNames)
+	for name, p := range got {
+		if _, ok := ref.Dependencies[name]; !ok && !p.Automatic {
+			t.Errorf("non-top-level package %q must be marked automatic", name)
 		}
 	}
-	t.Logf("prefix %s: %d globals match exactly: %v", prefixID, len(gotNames), gotNames)
+	gotNames := make([]string, 0, len(got))
+	for name := range got {
+		gotNames = append(gotNames, name)
+	}
+	sort.Strings(gotNames)
+	t.Logf("prefix %s: %d top-level globals, %d total rows: %v", prefixID, len(ref.Dependencies), len(gotNames), gotNames)
 }

@@ -77,8 +77,8 @@ func TestGroupByNameSearchOnlyRow(t *testing.T) {
 	if u.Row == nil || u.Row.LatestVersion != "3.0.0" {
 		t.Fatalf("representative row = %+v, want the search row", u.Row)
 	}
-	if u.Flag("npm") != "p*" {
-		t.Fatalf("flag = %q, want p*", u.Flag("npm"))
+	if u.Flag("npm") != "p  " {
+		t.Fatalf("flag = %q, want p (blank auto/action)", u.Flag("npm"))
 	}
 }
 
@@ -100,15 +100,49 @@ func TestGroupByNameFlagAggregatesMarks(t *testing.T) {
 		}
 	}
 	rows := GroupByName(fx, map[string]string{"/p/v24": "v24.0.0"})
-	if rows[0].Flag("npm") != "i-" {
-		t.Fatalf("flag = %q, want i- (remove marked on a destination)", rows[0].Flag("npm"))
+	if rows[0].Flag("npm") != "i -" {
+		t.Fatalf("flag = %q, want i - (remove marked on a destination)", rows[0].Flag("npm"))
 	}
 	// A mark under another manager must not leak into npm's flag.
 	fx[0].Packages["alpha"].SetMarkFor("yarn", MarkInstall)
-	if got := GroupByName(fx, map[string]string{"/p/v24": "v24.0.0"})[0].Flag("npm"); got != "i-" {
-		t.Fatalf("flag = %q, want i- (yarn mark must not affect npm)", got)
+	if got := GroupByName(fx, map[string]string{"/p/v24": "v24.0.0"})[0].Flag("npm"); got != "i -" {
+		t.Fatalf("flag = %q, want i - (yarn mark must not affect npm)", got)
 	}
-	if got := GroupByName(fx, map[string]string{"/p/v24": "v24.0.0"})[0].Flag("yarn"); got != "i+" {
-		t.Fatalf("yarn flag = %q, want i+", got)
+	if got := GroupByName(fx, map[string]string{"/p/v24": "v24.0.0"})[0].Flag("yarn"); got != "i +" {
+		t.Fatalf("yarn flag = %q, want i +", got)
+	}
+}
+
+func TestGroupByNameAutomaticSlot(t *testing.T) {
+	ps := &PrefixState{ID: "/p/v24", Packages: map[string]*PkgState{
+		"direct": {Name: "direct", InstalledVersion: "1.0.0", Origin: OriginInstalled},
+		"trans":  {Name: "trans", InstalledVersion: "2.0.0", Origin: OriginInstalled, Automatic: true},
+	}, Loaded: true}
+	rows := GroupByName([]*PrefixState{ps}, map[string]string{"/p/v24": "v24.0.0"})
+	if rows[0].Flag("npm") != "i  " {
+		t.Fatalf("direct flag = %q, want i (blank auto)", rows[0].Flag("npm"))
+	}
+	if rows[1].Flag("npm") != "iA " {
+		t.Fatalf("automatic flag = %q, want iA ", rows[1].Flag("npm"))
+	}
+	if !rows[1].Automatic() || rows[0].Automatic() {
+		t.Fatal("Automatic() must be true only for the transitive row")
+	}
+}
+
+func TestSortByStateIgnoresAutoAndActionSlots(t *testing.T) {
+	rows := []*PkgState{
+		{Name: "a1", InstalledVersion: "1.0.0", Automatic: true},                     // iA
+		{Name: "a2", InstalledVersion: "1.0.0"},                                      // i
+		{Name: "a3", Marks: map[string]MarkEntry{"npm": {Mark: MarkRemove}}},         // p -
+		{Name: "a4", InstalledVersion: "1.0.0", Unhealthy: true, Automatic: true},    // bA
+	}
+	SortRows(rows, SortState)
+	got := sortedNames(rows)
+	want := []string{"a4", "a1", "a2", "a3"} // state slot only: b < i < p, name breaks the i/i tie
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("state sort = %v, want %v (auto/action slots must not reorder)", got, want)
+		}
 	}
 }

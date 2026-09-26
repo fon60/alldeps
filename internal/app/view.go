@@ -494,7 +494,7 @@ func (m Model) infoBody() string {
 						ver = p.InstalledVersion
 					}
 					f := p.FlagFor(m.activeManagerID)
-					if f[1] != '*' {
+					if f[2] != ' ' {
 						flag = "  [" + f + "]"
 					}
 				}
@@ -584,8 +584,9 @@ func sortedDeps(deps map[string]string) []depPair {
 }
 
 // versionsBody renders the published-version list in the main-list column
-// layout (design D1): a two-character flag, the version, its size by
-// measured > registry unpacked > unknown precedence, and the where column
+// layout (design D1): a three-character <state><auto><action> flag, the
+// version, its size by measured > registry unpacked > unknown precedence, and
+// the where column
 // (headline environment plus +N presence counter, "-" when installed
 // nowhere). The visible slice follows the cursor through VerTop.
 func (m Model) versionsBody() string {
@@ -628,7 +629,7 @@ func (m Model) versionsBody() string {
 	}
 	for i := start; i < end; i++ {
 		r := m.versionRow(t, versions[i])
-		flagCell := padRight(string(r.state)+string(r.action), colFlag)
+		flagCell := padRight(string(r.state)+string(r.auto)+string(r.action), colFlag)
 		verCell := truncate(versions[i], verColVersion)
 		sizeCellS := padRight(sizeCell(r.size), colSize)
 		whereCell := padRight(fitText(r.where, whereW), whereW)
@@ -690,7 +691,7 @@ func (m Model) versionRow(t *Tab, v string) versionRow {
 		}
 	})
 
-	row := versionRow{state: 'p', action: '*', where: "-"}
+	row := versionRow{state: 'p', auto: m.autoCharFor(t.Name), action: ' ', where: "-"}
 	if len(carriers) > 0 {
 		row.state = 'i'
 		tag := m.activeManagerID
@@ -742,9 +743,26 @@ func (m Model) versionRow(t *Tab, v string) versionRow {
 
 type versionRow struct {
 	state  rune // 'i' installed in >=1 environment, else 'p'
-	action rune // pending mark's action char on its target row, '*' elsewhere
+	auto   rune // package-level auto slot: 'A' when an installed copy is automatic
+	action rune // pending mark's action char on its target row, a space elsewhere
 	size   *int64
 	where  string
+}
+
+// autoCharFor returns the auto slot of one package across the loaded
+// destinations of the active manager: 'A' when any installed copy was pulled
+// in automatically, a space otherwise.
+func (m Model) autoCharFor(name string) rune {
+	for _, e := range m.envs() {
+		ps := m.state.Prefixes[e.ID]
+		if ps == nil || !ps.Loaded {
+			continue
+		}
+		if p := ps.Packages[name]; p != nil && p.Installed() && p.Automatic {
+			return 'A'
+		}
+	}
+	return ' '
 }
 
 // versionContentH is the number of data rows the versions list can show below
@@ -815,6 +833,7 @@ var helpSections = []helpSection{
 		{"v", "published versions of the highlighted package (enter pins one)"},
 		{"g", "open the plan preview (press g again there to apply)"},
 		{"S", "cycle sort: name, version, size, state"},
+		{"a", "toggle visibility of automatic (A) packages"},
 		{"u", "refresh list and rescan environments"},
 		{"e / E", "next environment / environment picker"},
 		{"M", "package manager switcher (one active at a time)"},
@@ -1179,8 +1198,12 @@ func (m Model) statusLine() string {
 	if searching {
 		sortTxt = "" // the local sort does not apply to registry results
 	}
-	left := fmt.Sprintf("%d/%d pkgs, %d pending%s f:%s%s mgr:%s %s",
-		len(rows), total, pending, sortTxt, filterTxt, searchTxt, m.activeManagerID, displayPath(prefixID))
+	autoTxt := ""
+	if m.manualOnly {
+		autoTxt = " auto:hidden"
+	}
+	left := fmt.Sprintf("%d/%d pkgs, %d pending%s f:%s%s%s mgr:%s %s",
+		len(rows), total, pending, sortTxt, filterTxt, searchTxt, autoTxt, m.activeManagerID, displayPath(prefixID))
 	return lipgloss.NewStyle().Width(m.width).Render(
 		statusStyle.Render(fitText(left, m.width)))
 }

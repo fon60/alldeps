@@ -68,6 +68,37 @@ func TestLoadPrefixMsgMergesAndKeepsMarks(t *testing.T) {
 	}
 }
 
+func TestToPkgStatesCarriesAutomatic(t *testing.T) {
+	pkgs := toPkgStates([]ecosystem.Package{
+		{Name: "direct", Version: "1.0.0"},
+		{Name: "trans", Version: "2.0.0", Automatic: true},
+	})
+	if pkgs["direct"].Automatic {
+		t.Fatal("direct package must not be automatic")
+	}
+	if !pkgs["trans"].Automatic {
+		t.Fatal("automatic package flag lost in toPkgStates")
+	}
+}
+
+func TestApplyReloadRetainedRowKeepsAutomatic(t *testing.T) {
+	m := modelWithLoadedPrefix(t, "/p")
+	// A pending-install row that is absent from disk (install did not take
+	// effect) must survive the reload with its fields intact.
+	m.state.Prefixes["/p"].Packages["trans"] = &domain.PkgState{
+		Name: "trans", Origin: domain.OriginSearch, LatestVersion: "2.0.0", Automatic: true,
+	}
+	m.state.SetMark("/p", "trans", "stub", domain.MarkInstall)
+	m.state.Applying = true
+	m.applyDests = []string{"/p"}
+
+	m = m.step(t, applyReloadMsg{pkgsByDest: map[string]map[string]*domain.PkgState{"/p": {}}})
+
+	if p := m.state.Prefixes["/p"].Packages["trans"]; p == nil || !p.Automatic {
+		t.Fatalf("retained row = %+v, want it kept with the automatic flag", p)
+	}
+}
+
 func TestDiscoverMsgStartsLoad(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // keep lock files out of the real state dir
 	m := New(newStubEco())
