@@ -7,11 +7,11 @@ Provide on-demand discovery of installable packages through the npm registry sea
 ## Requirements
 
 ### Requirement: Registry search
-The user SHALL be able to submit a search query; the system SHALL query the search endpoint of the configured registry and present the results in the list as rows with state flag `p`, showing package name, latest version, and a short description. A single query SHALL return a bounded number of results (a page), not an unbounded set.
+The user SHALL be able to submit a search query; the system SHALL query the search endpoint of the configured registry and present the results in a dedicated Search tab as rows with state flag `p`, showing package name, latest version, and a short description. The installed package list underneath SHALL remain intact while a search is active. A single query SHALL return a bounded number of results (a page), not an unbounded set.
 
 #### Scenario: Search returns results
 - **WHEN** the user searches for "package manager" and the registry returns matches
-- **THEN** result rows appear with state flag `p`, each showing the package name, its latest version, and a short description
+- **THEN** a Search tab opens showing result rows with state flag `p`, each showing the package name, its latest version, and a short description
 
 #### Scenario: Bounded results
 - **WHEN** a query matches more packages than one result page
@@ -66,30 +66,34 @@ A search result for a package that is already installed in the selected prefix S
 - **THEN** its row shows state/action `p+` and it is included in the next apply plan
 
 ### Requirement: Search results view
-While a search query is active, the list SHALL display only that search's results: the not-installed result rows plus any installed packages present in the results (rendered as their installed rows). Installed packages not part of the results are hidden while the search is active. Clearing the search (esc) removes unmarked result rows and restores the full installed list; marked result rows survive the clear. While a search is active, initiating a local live match SHALL be refused with a notice until the search is cleared.
+A Search tab SHALL display only its own query's results: the not-installed result rows plus any installed packages present in the results (rendered as their installed rows). Installed packages not part of the results are not shown in that tab; they remain visible on the list tab. Pressing / on an active Search tab SHALL clear its loaded results and take a new query in place, without opening another tab. Closing the Search tab (esc or q) discards its unmarked result rows; marked result rows survive as pending marks. While a Search tab is active, initiating a local live match SHALL be refused with a notice (the match applies to the list tab).
 
 #### Scenario: Only results visible while searching
 - **WHEN** the user searches for "pad" and the registry returns ten not-installed matches while five packages are installed
-- **THEN** the list shows exactly those ten `p` rows and none of the installed packages
+- **THEN** the Search tab shows exactly those ten `p` rows, and the list tab still shows the installed packages when returned to
 
 #### Scenario: Clearing restores the installed list
-- **WHEN** the user clears an active search with esc
-- **THEN** unmarked result rows are removed and the list shows exactly the installed packages plus any marked result rows
+- **WHEN** the user closes a Search tab with esc or q
+- **THEN** its unmarked result rows are removed and the previous tab (e.g. the list) is active showing exactly the installed packages plus any marked result rows
+
+#### Scenario: Re-querying in place
+- **WHEN** a Search tab for "foo" is active and the user presses / and submits "bar"
+- **THEN** the same tab clears its "foo" results and loads the "bar" results; no new tab is opened
 
 #### Scenario: Local match refused during search
-- **WHEN** the user initiates a local live match while a search is active
-- **THEN** a notice explains that the search must be cleared first and no match prompt opens
+- **WHEN** the user initiates a local live match while a Search tab is active
+- **THEN** a notice explains that the match applies to the list tab and no match prompt opens
 
 ### Requirement: Search results are ephemeral until marked
-A new search SHALL replace previously displayed search rows that carry no pending mark; search rows with a pending mark MUST be retained regardless of subsequent searches. Installed rows are never affected by search replacement.
+A new query in a Search tab SHALL replace previously loaded result rows that carry no pending mark; result rows with a pending mark MUST be retained as pending marks regardless of subsequent queries in the same tab. Installed rows are never affected by search replacement.
 
 #### Scenario: New search replaces unmarked results
-- **WHEN** the user searches for "foo" (five result rows appear) and then searches for "bar"
-- **THEN** the five "foo" rows are removed and replaced by the "bar" results
+- **WHEN** a Search tab shows five unmarked "foo" result rows and the user re-queries it with "bar"
+- **THEN** the five "foo" rows are removed and replaced by the "bar" results in the same tab
 
 #### Scenario: Marked results survive a new search
-- **WHEN** the user marks one "foo" result for install and then searches for "bar"
-- **THEN** the marked "foo" row remains in the list with its pending mark, alongside the new "bar" results
+- **WHEN** the user marks one "foo" result for install and then re-queries the same tab with "bar"
+- **THEN** the pending mark on foo is retained and the foo row remains visible on the list tab, while the Search tab shows the "bar" results
 
 ### Requirement: Search failure handling
 A failed search (network error, registry error, no results) SHALL display an appropriate message and MUST NOT clear or modify existing list rows, filters, or pending marks.

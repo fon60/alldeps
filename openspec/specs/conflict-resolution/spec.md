@@ -18,7 +18,7 @@ The system SHALL mark, on the package list, every package involved in an unresol
 - **THEN** the user can still navigate, filter, sort, and mark other packages normally without being forced to resolve it first
 
 ### Requirement: Per-package conflict resolution screen
-Opening a conflicted package SHALL show its conflicts. Each conflict SHALL present one or more resolution options — such as keep/use a specific version, downgrade, remove, or skip (do not install) — each with a stated consequence describing what else changes. Where relevant an option SHALL include an approximate size delta. Selecting an option SHALL update the marks/plan and re-resolve the affected conflicts.
+Opening a conflicted package SHALL show its conflicts. Each conflict SHALL present one or more resolution options — such as keep/use a specific version, downgrade, remove, or skip (do not install) — each with a stated consequence describing what else changes. Where relevant an option SHALL include an approximate size delta. Selecting an option SHALL update the marks/plan and re-resolve the affected conflicts. The resolution screen SHALL open as its own tab; closing it with q or esc returns to the previous tab, and if that tab is a plan preview whose conflicts remain unresolved, the plan gate SHALL be shown again.
 
 #### Scenario: Resolving by choosing an option
 - **WHEN** a package's conflict offers "downgrade to 1.9.4" (consequence: another package drops to a major downgrade) and the user selects it
@@ -27,6 +27,10 @@ Opening a conflicted package SHALL show its conflicts. Each conflict SHALL prese
 #### Scenario: Consequences are shown before choosing
 - **WHEN** the user opens the resolution screen for a conflicted package
 - **THEN** each option's consequence (and size delta where applicable) is visible before the user commits to it
+
+#### Scenario: Closing returns to the opening context
+- **WHEN** the user opens the resolver from the plan gate and closes it without choosing an option
+- **THEN** the plan tab is active again and its gate reappears because conflicts remain unresolved
 
 ### Requirement: Plan gate on unresolved conflicts
 When the user opens a plan that contains one or more unresolved conflicts, the system SHALL present a popup asking whether to resolve them. Choosing **[Yes]** SHALL open the conflict resolution screen. Choosing **[No]** SHALL show the plan with the conflicting rows marked in the same way as on the main list.
