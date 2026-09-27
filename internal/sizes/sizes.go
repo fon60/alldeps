@@ -19,7 +19,7 @@ func inodeOf(info fs.FileInfo) (inodeKey, bool) {
 	if !ok {
 		return inodeKey{}, false
 	}
-	return inodeKey{dev: st.Dev, ino: st.Ino}, true
+	return inodeKey{dev: uint64(st.Dev), ino: st.Ino}, true
 }
 
 // Measure returns the total apparent byte size of regular files under dir,
