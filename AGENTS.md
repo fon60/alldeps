@@ -32,7 +32,6 @@ internal/
   sizes/                background disk-size measurement (hardlink-deduped)
   lock/                 session-scoped exclusive per-environment lock ($XDG_STATE_HOME/npmitude/locks)
 openspec/               specs + changes (active change: openspec/changes/<name>/tasks.md)
-tmp/                    local temporary directory to be used instead of system tmp
 ```
 
 Tests are co-located (`_test.go` in the same package/directory). The root `package.json` exists only for the OpenSpec CLI — it is not part of the Go app.
@@ -74,6 +73,7 @@ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' ./tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 - Follow the OpenSpec workflow for feature work: use the `openspec-*` skills (see `.opencode/skills/`) and flip `- [ ]` → `- [x]` in the active change's `tasks.md` only after a task is implemented AND verified.
 - Keep unit tests hermetic (fixtures + httptest stubs); real-environment checks are separate and explicitly named (e.g. `TestLSGlobalRealPrefix`).
 - Verify against this machine's real nvm layout (`~/.nvm/versions/node/`, 9 versions) when a task says "manual check".
+- Use `./tmp/` for all scratch files, pty captures and throwaway fixtures — never system `/tmp`.
 
 ## Don't
 
