@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 // Info describes one detected Node installation prefix.

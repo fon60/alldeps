@@ -8,11 +8,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/adapter/composer"
-	"npmitude/internal/adapter/gomod"
-	"npmitude/internal/adapter/npm"
-	"npmitude/internal/app"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/adapter/composer"
+	"github.com/fon60/alldeps/internal/adapter/gomod"
+	"github.com/fon60/alldeps/internal/adapter/npm"
+	"github.com/fon60/alldeps/internal/app"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func main() {
@@ -22,7 +22,7 @@ func main() {
 	}
 	mode, root, err := app.SelectMode(arg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "npmitude:", err)
+		fmt.Fprintln(os.Stderr, "alldeps:", err)
 		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

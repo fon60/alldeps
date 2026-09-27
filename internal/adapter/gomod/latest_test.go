@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 const updateFixture = `{"Path":"example.com/fixture","Version":"(devel)","Main":true}

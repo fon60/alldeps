@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"npmitude/internal/filter"
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/filter"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 func TestMain(m *testing.M) {
@@ -31,7 +31,7 @@ func TestHeaderShowsTitleAndScreenActions(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
 	out := render80x24(m)
 	lines := strings.Split(out, "\n")
-	wantTitle := fmt.Sprintf("npmitude %s @ %s", Version, m.hostname)
+	wantTitle := fmt.Sprintf("alldeps %s @ %s", Version, m.hostname)
 	if got := strings.TrimRight(ansiRE.ReplaceAllString(lines[0], ""), " "); got != wantTitle {
 		t.Fatalf("line 1 = %q, want %q", got, wantTitle)
 	}
@@ -59,7 +59,7 @@ func TestListFrameFitsTerminalHeight(t *testing.T) {
 		if len(lines) != h {
 			t.Fatalf("height %d: View returned %d lines (terminal would scroll and lose the header)", h, len(lines))
 		}
-		if !strings.HasPrefix(ansiRE.ReplaceAllString(lines[0], ""), "npmitude "+Version) {
+		if !strings.HasPrefix(ansiRE.ReplaceAllString(lines[0], ""), "alldeps "+Version) {
 			t.Fatalf("height %d: first line is not the title:\n%s", h, lines[0])
 		}
 	}

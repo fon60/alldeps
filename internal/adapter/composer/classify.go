@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // solverFailureMarker is the line composer prints when the dependency solver

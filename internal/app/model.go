@@ -12,11 +12,11 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/filter"
-	"npmitude/internal/lock"
-	"npmitude/internal/sizes"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/filter"
+	"github.com/fon60/alldeps/internal/lock"
+	"github.com/fon60/alldeps/internal/sizes"
 )
 
 // Version is the application version shown in the header.
@@ -393,7 +393,7 @@ func (m *Model) loadMoreSearchCmd() tea.Cmd {
 func heldNotice(prefixID string, err error) string {
 	var held *lock.HeldError
 	if errors.As(err, &held) {
-		return fmt.Sprintf("environment %s is open in another npmitude (pid %d on %s) — choose a different environment", displayPath(prefixID), held.Holder.PID, held.Holder.Host)
+		return fmt.Sprintf("environment %s is open in another alldeps (pid %d on %s) — choose a different environment", displayPath(prefixID), held.Holder.PID, held.Holder.Host)
 	}
 	return "cannot lock environment " + displayPath(prefixID) + ": " + err.Error()
 }

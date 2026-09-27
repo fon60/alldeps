@@ -10,8 +10,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 const (
@@ -26,7 +26,7 @@ const (
 
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
-		return "npmitude — waiting for terminal size…"
+		return "alldeps — waiting for terminal size…"
 	}
 	var body string
 	switch {
@@ -73,7 +73,7 @@ func (m Model) View() string {
 // version and host; line 2 lists the actions available on the current screen.
 // Both lines sit on the primary-color background band with white text.
 func (m Model) headerLines() []string {
-	title := fmt.Sprintf("npmitude %s @ %s", Version, m.hostname)
+	title := fmt.Sprintf("alldeps %s @ %s", Version, m.hostname)
 	return []string{
 		headerTitleStyle.Width(m.width).Render(fitText(title, m.width)),
 		headerHintStyle.Width(m.width).Render(fitText(m.screenHints(), m.width)),

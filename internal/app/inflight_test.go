@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // D6: an in-flight page/doc applies to its owning tab by (kind, subject) even

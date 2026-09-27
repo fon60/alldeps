@@ -10,7 +10,7 @@ Present the globally installed packages of the selected Node prefix in an aptitu
 In global mode the system SHALL display one row per package *name*, aggregated across all destinations of the active manager, rather than one row per (destination, package). For each name the row SHALL show a two-character state/action flag, the package name, the installed version taken from the headline destination, disk size, and candidate version when different. The **headline destination** is the highest-ranked destination (by Node/runtime version, not by package version) that has the package installed; a **presence counter** SHALL show how many additional destinations also have the package installed.
 
 #### Scenario: Listing globals on launch
-- **WHEN** the user launches npmitude in global mode and a single destination of the active manager has three globally installed packages
+- **WHEN** the user launches alldeps in global mode and a single destination of the active manager has three globally installed packages
 - **THEN** the list shows exactly three rows, each with state flag `i`, the package name, its installed version (the headline copy), and its disk size
 
 #### Scenario: Aggregated row across destinations

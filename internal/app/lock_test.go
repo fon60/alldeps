@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/lock"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/lock"
 )
 
 // foreignHolder acquires a live lock (this test process is alive, so its
@@ -15,7 +15,7 @@ import (
 // would use.
 func foreignHolder(t *testing.T, stateDir, prefixID string) {
 	t.Helper()
-	other := lock.New(filepath.Join(stateDir, "npmitude", "locks"))
+	other := lock.New(filepath.Join(stateDir, "alldeps", "locks"))
 	if err := other.Acquire(prefixID); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestStartupRefusesLockedDefault(t *testing.T) {
 	if next.overlay != OverlayPicker {
 		t.Fatalf("overlay = %v, want picker", next.overlay)
 	}
-	if !strings.Contains(next.notice, "another npmitude") {
+	if !strings.Contains(next.notice, "another alldeps") {
 		t.Fatalf("notice = %q, want holder identification", next.notice)
 	}
 	if next.state.ActivePrefixID != "" {
@@ -60,7 +60,7 @@ func TestSwitchRefusesLockedEnv(t *testing.T) {
 	if m.state.ActivePrefixID != "/b" {
 		t.Fatalf("active = %q, want unchanged /b", m.state.ActivePrefixID)
 	}
-	if !strings.Contains(m.notice, "another npmitude") {
+	if !strings.Contains(m.notice, "another alldeps") {
 		t.Fatalf("notice = %q, want holder identification", m.notice)
 	}
 }

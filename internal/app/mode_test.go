@@ -29,7 +29,7 @@ func TestSelectModeDotIsProject(t *testing.T) {
 
 	mode, root, err := SelectMode(".")
 	if err != nil {
-		t.Fatalf("npmitude . must select project mode: %v", err)
+		t.Fatalf("alldeps . must select project mode: %v", err)
 	}
 	if mode != ModeProject {
 		t.Fatalf("mode = %v, want ModeProject", mode)

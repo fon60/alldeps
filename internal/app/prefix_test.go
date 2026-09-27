@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 func TestSwitchPrefixLoadsTarget(t *testing.T) {

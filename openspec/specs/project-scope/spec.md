@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Manage project-scoped package collections by pointing npmitude at a directory, auto-detecting which package managers apply, and operating on one manager's collection at a time with strict per-manager isolation.
+Manage project-scoped package collections by pointing alldeps at a directory, auto-detecting which package managers apply, and operating on one manager's collection at a time with strict per-manager isolation.
 
 ## Requirements
 
@@ -10,15 +10,15 @@ Manage project-scoped package collections by pointing npmitude at a directory, a
 The system SHALL support two entry modes selected by the command-line argument. With no path argument it SHALL launch global mode. Given a path argument (`.`, `./<dir>`, or an absolute directory) it SHALL launch project mode rooted at that directory. A path argument that does not name an existing directory SHALL be rejected with a clear notice and the application SHALL NOT enter project mode.
 
 #### Scenario: Launch global mode
-- **WHEN** the user runs npmitude with no path argument
+- **WHEN** the user runs alldeps with no path argument
 - **THEN** global mode starts exactly as before, targeting the active manager's destinations
 
 #### Scenario: Launch project mode
-- **WHEN** the user runs `npmitude .` inside a project directory
+- **WHEN** the user runs `alldeps .` inside a project directory
 - **THEN** project mode starts rooted at that directory
 
 #### Scenario: Invalid path rejected
-- **WHEN** the user runs npmitude with a path argument that is not an existing directory
+- **WHEN** the user runs alldeps with a path argument that is not an existing directory
 - **THEN** a clear notice is shown and project mode does not start
 
 ### Requirement: Project manager detection
@@ -73,7 +73,7 @@ In project mode, when the project root contains an `.nvmrc` file whose first lin
 - **THEN** project operations run with the v20.19.1 prefix's node and npm
 
 #### Scenario: Pin does not change global mode
-- **WHEN** the user launches npmitude without a path argument in a shell whose cwd contains an `.nvmrc`
+- **WHEN** the user launches alldeps without a path argument in a shell whose cwd contains an `.nvmrc`
 - **THEN** global mode behaves exactly as before, ignoring any `.nvmrc`
 
 ### Requirement: Fallback when the pinned version is not installed

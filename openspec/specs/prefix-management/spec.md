@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Detect the Node installation prefixes present on the machine (version managers and system) and let the user select which prefix all npmitude operations target.
+Detect the Node installation prefixes present on the machine (version managers and system) and let the user select which prefix all alldeps operations target.
 
 ## Requirements
 
@@ -21,7 +21,7 @@ On startup and on refresh, the system SHALL detect available Node prefixes from 
 The initially selected prefix SHALL be the active npm prefix — the one plain `npm` commands would use.
 
 #### Scenario: Launch without explicit selection
-- **WHEN** the user launches npmitude without choosing a prefix
+- **WHEN** the user launches alldeps without choosing a prefix
 - **THEN** the list and all operations target the active npm prefix
 
 ### Requirement: Prefix switching
@@ -39,7 +39,7 @@ The user SHALL be able to switch the selected prefix at any time. After switchin
 Opening an environment SHALL acquire an exclusive advisory lock for that environment; the lock is held for the lifetime of the open environment and released when the environment is closed, when the user switches away from it (the new environment's lock MUST be acquired before the old one is released), or when the application exits. Attempting to open an environment whose lock is held by another live instance SHALL be refused with a notice identifying the holder. A lock whose holder is no longer running SHALL be treated as stale and cleared automatically.
 
 #### Scenario: Second instance is refused
-- **WHEN** one npmitude instance has environment X open and a second instance attempts to open X
+- **WHEN** one alldeps instance has environment X open and a second instance attempts to open X
 - **THEN** the second instance is refused with a notice identifying the holding instance, and X remains open in the first instance
 
 #### Scenario: Switching without a gap
@@ -54,12 +54,12 @@ Opening an environment SHALL acquire an exclusive advisory lock for that environ
 The currently selected prefix path SHALL be visible at all times in the status line.
 
 #### Scenario: Status line shows prefix
-- **WHEN** the user is viewing any screen of npmitude
+- **WHEN** the user is viewing any screen of alldeps
 - **THEN** the selected prefix path is shown in the status line
 
 ### Requirement: Vanished prefix handling
 If a previously detected prefix no longer exists (e.g. its Node version was removed), the system SHALL drop it from the switcher on refresh; if it was the selected prefix, the system SHALL fall back to the active npm prefix and inform the user.
 
 #### Scenario: Selected version removed
-- **WHEN** the user's selected nvm version is deleted outside npmitude and npmitude refreshes
+- **WHEN** the user's selected nvm version is deleted outside alldeps and alldeps refreshes
 - **THEN** that prefix disappears from the switcher, selection falls back to the active npm prefix, and a notice is shown

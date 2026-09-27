@@ -2,14 +2,14 @@
 
 ## Project Overview
 
-`npmitude` is a terminal UI (aptitude-style) for managing globally installed npm packages across multiple Node prefixes (nvm/fnm/volta/system). Written in Go with the Charm ecosystem. The spec lives in `openspec/` — read the active change's `proposal.md`, `design.md`, and `tasks.md` before implementing.
+`alldeps` is a terminal UI (aptitude-style) for managing globally installed packages across multiple ecosystems: Node (npm/yarn/pnpm, with nvm/fnm/volta/system prefixes), PHP (composer) and Go modules — with more package managers (pacman, yum, apt) planned. Written in Go with the Charm ecosystem. The spec lives in `openspec/` — read the active change's `proposal.md`, `design.md`, and `tasks.md` before implementing.
 
 ## Setup Commands
 
-- Build: `./build.sh` → static binary at repo root `./npmitude` (CGO_ENABLED=0, -trimpath, stripped)
+- Build: `./build.sh` → static binary at repo root `./alldeps` (CGO_ENABLED=0, -trimpath, stripped)
 - Test all: `go test ./...`
 - Test one package: `go test ./internal/domain/`
-- Run: `./npmitude` (rebuild with `./build.sh` first — a stale binary causes confusing "changes not visible" bugs)
+- Run: `./alldeps` (rebuild with `./build.sh` first — a stale binary causes confusing "changes not visible" bugs)
 - Toolchain: Go 1.27.1; deps pinned in go.mod (bubbletea v1.3.10, lipgloss v1.1.0, bubbles v1.0.0)
 
 ## Project Structure
@@ -24,13 +24,13 @@ internal/
                         screens: list, picker, plan, info, versions, readme; quit-confirm + hint bar
   domain/               AppState / PrefixState / PkgState, marks, sorting (CompareVersions, SortRows, SortVersions), plan invariant; imports nothing under adapter/ or TUI pkgs
   ecosystem/            Ecosystem port (Discover, ListInstalled, Search, Resolve, Execute, Lock, DetectProject, Capabilities) + Intent/Plan/Conflict/ResolutionOption/Environment/Hit/Caps types
-  adapter/              npm/ — the concrete Ecosystem impl delegating to npmcmd/registry/prefix/sizes; owns op-verb + layout strings
+  adapter/              npm/ (npm+yarn+pnpm variants), composer/, gomod/ — concrete Ecosystem impls; npm/ delegates to npmcmd/registry/prefix/sizes and owns op-verb + layout strings
   npmcmd/               runs `npm ls -g --all --json` per prefix, parses tree, GetRegistry, LocalDoc, Readme
   registry/             HTTP client: dist-tags, outdated checks (TTL cache), search, full Doc (GetDoc)
   filter/               filter expression parser (~i ~u ~b ~n <regex>, ! & |, parens)
   prefix/               prefix detection (nvm/fnm/volta + active npm prefix) and Active()
   sizes/                background disk-size measurement (hardlink-deduped)
-  lock/                 session-scoped exclusive per-environment lock ($XDG_STATE_HOME/npmitude/locks)
+  lock/                 session-scoped exclusive per-environment lock ($XDG_STATE_HOME/alldeps/locks)
 openspec/               specs + changes (active change: openspec/changes/<name>/tasks.md)
 ```
 
@@ -42,13 +42,13 @@ The app is interactive; verify behavior through a pty with piped keystrokes:
 
 ```bash
 ./build.sh >/dev/null
-{ sleep 3; printf 'q'; sleep 0.5; } | script -qec "stty cols 80 rows 24; ./npmitude" /dev/null > ./tmp/out.txt 2>&1
+{ sleep 3; printf 'q'; sleep 0.5; } | script -qec "stty cols 80 rows 24; ./alldeps" /dev/null > ./tmp/out.txt 2>&1
 sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' ./tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 ```
 
 - Target terminal size is **80x24** — all layouts must fit it (status line format: `%d/%d packages, %d pending  sort:%s  f:%s  <tilde-path>`).
 - bubbletea diff-renders frames, so pty captures are fragmentary; prefer deterministic Go unit tests for logic, use pty runs only for visual/flow checks.
-- Simulate offline: `env npm_config_registry=http://127.0.0.1:9/ ./npmitude`.
+- Simulate offline: `env npm_config_registry=http://127.0.0.1:9/ ./alldeps`.
 - PHP-version-dependent tests (composer platform conflicts) run in docker against a pinned image, not the host PHP — see `test/e2e-composer-docker.sh` (`php:8.1-cli`); the solver's platform verdict must be reproducible from the image tag.
 - Test fixtures for npm JSON live in `internal/npmcmd/*_test.go`; registry behavior is tested against local `httptest` stubs (no real network in unit tests).
 
@@ -80,4 +80,4 @@ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' ./tmp/out.txt | tr -d '\r' | grep -vE '^ *$'
 - Don't run the app or tests expecting the previous binary — rebuild with `./build.sh` first.
 - Don't add TUI libraries beyond the Charm trio.
 - Don't let registry/network failures block first paint or mutate list state (search/outdated failures must be non-fatal notices).
-- Don't commit the built `./npmitude` binary or `node_modules/`.
+- Don't commit the built `./alldeps` binary or `node_modules/`.

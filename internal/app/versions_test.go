@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // versionsRowFor returns the ANSI-stripped data row of version v in a rendered

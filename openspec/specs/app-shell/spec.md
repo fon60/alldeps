@@ -10,8 +10,8 @@ Application-wide chrome shared by every screen: an identifying header and a key-
 Every screen SHALL display a three-line header at the top of the window: line 1 carrying the application name, its version, and the host name; line 2 listing the actions available on the current screen; line 3 carrying the tab strip (see Tab navigation). All three lines SHALL be rendered as a full-width band on the primary theme color background (spanning the entire terminal width, not just the printed text). The header MUST NOT consume more than three lines on any screen.
 
 #### Scenario: Header on launch
-- **WHEN** the user launches npmitude
-- **THEN** line 1 shows "npmitude <version> @ <hostname>", line 2 lists the package-list key bindings, and line 3 shows a tab strip containing only the root List tab, all on a primary-color band spanning the full terminal width
+- **WHEN** the user launches alldeps
+- **THEN** line 1 shows "alldeps <version> @ <hostname>", line 2 lists the package-list key bindings, and line 3 shows a tab strip containing only the root List tab, all on a primary-color band spanning the full terminal width
 
 #### Scenario: Band spans the full width
 - **WHEN** the header is rendered on an 80-column terminal
@@ -36,7 +36,7 @@ Pressing `?` on any tab SHALL open a help tab listing all key bindings grouped b
 The program SHALL run in the terminal's alternate screen buffer for its entire lifetime. On any exit — plain quit, quit after the pending-marks confirmation, or quit after an apply run — the terminal SHALL be restored to exactly the state it was in before launch: prior content visible, no residue of the interface drawn by the program, and the shell prompt continuing from where it was.
 
 #### Scenario: Quit restores the previous screen
-- **WHEN** the user launches npmitude, browses the package list, and quits with q
+- **WHEN** the user launches alldeps, browses the package list, and quits with q
 - **THEN** the terminal shows exactly what it displayed before launch — no leftover interface — and the shell prompt continues at its pre-launch position
 
 #### Scenario: Every exit path restores

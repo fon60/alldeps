@@ -3,7 +3,7 @@ package app
 import (
 	"sort"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // Applicable is one package manager that applies to a project, as reported by

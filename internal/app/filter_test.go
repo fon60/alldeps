@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 func keyMsg(t *testing.T, s string) tea.KeyMsg {

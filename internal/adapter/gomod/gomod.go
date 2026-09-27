@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/lock"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/lock"
 )
 
 const (
@@ -314,7 +314,7 @@ func (e *Ecosystem) Writable(env ecosystem.Environment) bool {
 	if err != nil || !fi.IsDir() {
 		return false
 	}
-	f, err := os.CreateTemp(e.root, ".npmitude-write-*")
+	f, err := os.CreateTemp(e.root, ".alldeps-write-*")
 	if err != nil {
 		return false
 	}

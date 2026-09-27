@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // recordedRootClash is real composer 2.9 solver output: a pending root

@@ -3,7 +3,7 @@ package domain
 import (
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func conflictStateFixture() *PrefixState {

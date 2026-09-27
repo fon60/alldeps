@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func twoManagerModel(t *testing.T, prefixID string) Model {

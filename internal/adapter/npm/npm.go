@@ -14,11 +14,11 @@ import (
 	"strings"
 	"sync"
 
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/lock"
-	"npmitude/internal/npmcmd"
-	"npmitude/internal/prefix"
-	"npmitude/internal/registry"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/lock"
+	"github.com/fon60/alldeps/internal/npmcmd"
+	"github.com/fon60/alldeps/internal/prefix"
+	"github.com/fon60/alldeps/internal/registry"
 )
 
 const (
@@ -293,7 +293,7 @@ func (e *Ecosystem) Writable(env ecosystem.Environment) bool {
 		if err != nil || !fi.IsDir() {
 			continue
 		}
-		f, err := os.CreateTemp(d, ".npmitude-write-*")
+		f, err := os.CreateTemp(d, ".alldeps-write-*")
 		if err != nil {
 			return false
 		}

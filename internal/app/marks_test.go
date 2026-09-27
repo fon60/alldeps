@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 func TestPlusInstallsNotInstalled(t *testing.T) {

@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // twoDestModel builds a model with two loaded destinations of the stub

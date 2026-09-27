@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/lock"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/lock"
 )
 
 // recordedLS is a fixture of `npm ls -g --all --json` output.
@@ -204,7 +204,7 @@ func TestLockFallsBackToSessionLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lm := lock.New(filepath.Join(dir, "npmitude", "locks"))
+	lm := lock.New(filepath.Join(dir, "alldeps", "locks"))
 	if !lm.IsHeld("/p") {
 		t.Fatal("Lock must take the session-lock fallback path for npm")
 	}

@@ -1,4 +1,4 @@
-// Package domain holds the npmitude application state model (design D4):
+// Package domain holds the alldeps application state model (design D4):
 // everything keyed by environment (prefix path), with pure transition helpers.
 package domain
 
@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 type Origin int

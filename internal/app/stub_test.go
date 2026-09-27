@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // stubEco is a canned Ecosystem for app tests: the app must be exercisable

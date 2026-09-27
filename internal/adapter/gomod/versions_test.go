@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 const versionsFixture = "github.com/direct/alpha v1.0.0 v1.2.3 v2.0.0-beta v2.0.0\n"

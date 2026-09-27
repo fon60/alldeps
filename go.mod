@@ -1,4 +1,4 @@
-module npmitude
+module github.com/fon60/alldeps
 
 go 1.27.1
 

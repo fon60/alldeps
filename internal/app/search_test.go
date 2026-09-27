@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/lock"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/lock"
 )
 
 func TestSearchMergeNoDuplicateInstalled(t *testing.T) {

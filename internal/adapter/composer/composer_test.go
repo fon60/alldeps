@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func TestDetectProjectComposerJSON(t *testing.T) {

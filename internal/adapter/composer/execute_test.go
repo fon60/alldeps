@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 // fakeComposerShim puts a `composer` script first on PATH that records every

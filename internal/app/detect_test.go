@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func markerStub(id, marker string) *stubEco {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end session test (task 3.3): launch npmitude in a pty against a
+# End-to-end session test (task 3.3): launch alldeps in a pty against a
 # throwaway nvm layout with TWO node prefixes, search for a package, pick both
 # destinations from the install-target popup, confirm the plan, and verify the
 # two-destination plan is applied in one run (one manager invocation per
@@ -9,9 +9,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-[ -x ./npmitude ] || ./build.sh
+[ -x ./alldeps ] || ./build.sh
 
-BASE=$(mktemp -d "${TMPDIR:-/tmp}/npmitude-e2e.XXXXXX")
+BASE=$(mktemp -d "${TMPDIR:-/tmp}/alldeps-e2e.XXXXXX")
 PREFIX_A="$BASE/versions/node/v18.0.0"
 PREFIX_B="$BASE/versions/node/v16.0.0"
 trap 'rm -rf "$BASE"' EXIT
@@ -72,7 +72,7 @@ p() { /usr/bin/printf "$@" 2>/dev/null || true; }
     sleep 1
   done
 } | env PATH="$PREFIX_A/bin:$PATH" NVM_DIR="$BASE" \
-  script -qec "stty cols 80 rows 24; ./npmitude" /dev/null > "$OUT" 2>&1
+  script -qec "stty cols 80 rows 24; ./alldeps" /dev/null > "$OUT" 2>&1
 
 sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$OUT" | tr -d '\r' > "$BASE/clean.txt"
 

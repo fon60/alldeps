@@ -9,9 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
-	"npmitude/internal/sizes"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/sizes"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -545,7 +545,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pickerCursor < len(m.envs()) {
 			id := m.envs()[m.pickerCursor].ID
 			if m.pickerLocked[id] {
-				m.notice = "environment " + displayPath(id) + " is open in another npmitude — choose a different environment"
+				m.notice = "environment " + displayPath(id) + " is open in another alldeps — choose a different environment"
 				return m, nil
 			}
 			m.overlay = OverlayNone

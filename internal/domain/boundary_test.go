@@ -43,7 +43,7 @@ func importsOf(t *testing.T, dir string) map[string][]string {
 func TestDomainImportBoundary(t *testing.T) {
 	for file, imps := range importsOf(t, ".") {
 		for _, imp := range imps {
-			if strings.HasPrefix(imp, "npmitude/internal/adapter/") {
+			if strings.HasPrefix(imp, "github.com/fon60/alldeps/internal/adapter/") {
 				t.Errorf("domain/%s imports adapter package %s", file, imp)
 			}
 			if strings.HasPrefix(imp, "github.com/charmbracelet/") || strings.HasPrefix(imp, "github.com/muesli/") {
@@ -59,11 +59,11 @@ func TestDomainImportBoundary(t *testing.T) {
 func TestAppImportBoundary(t *testing.T) {
 	for file, imps := range importsOf(t, filepath.Join("..", "app")) {
 		for _, imp := range imps {
-			if strings.HasPrefix(imp, "npmitude/internal/adapter/") {
+			if strings.HasPrefix(imp, "github.com/fon60/alldeps/internal/adapter/") {
 				t.Errorf("app/%s imports adapter package %s", file, imp)
 			}
 			switch imp {
-			case "npmitude/internal/npmcmd", "npmitude/internal/registry", "npmitude/internal/prefix":
+			case "github.com/fon60/alldeps/internal/npmcmd", "github.com/fon60/alldeps/internal/registry", "github.com/fon60/alldeps/internal/prefix":
 				t.Errorf("app/%s imports node-ecosystem package %s directly", file, imp)
 			}
 		}

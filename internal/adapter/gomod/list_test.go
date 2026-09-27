@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 const listFixture = `{"Path":"example.com/fixture","Version":"(devel)","Main":true}

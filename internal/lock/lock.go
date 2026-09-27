@@ -48,8 +48,8 @@ type Manager struct {
 	liveness func(Info) bool
 }
 
-// NewDefault returns a Manager using $XDG_STATE_HOME/npmitude/locks (default
-// ~/.local/state/npmitude/locks).
+// NewDefault returns a Manager using $XDG_STATE_HOME/alldeps/locks (default
+// ~/.local/state/alldeps/locks).
 func NewDefault() *Manager {
 	dir := os.Getenv("XDG_STATE_HOME")
 	if dir == "" {
@@ -59,7 +59,7 @@ func NewDefault() *Manager {
 		}
 		dir = filepath.Join(home, ".local", "state")
 	}
-	return New(filepath.Join(dir, "npmitude", "locks"))
+	return New(filepath.Join(dir, "alldeps", "locks"))
 }
 
 // New returns a Manager that stores lock files under dir.

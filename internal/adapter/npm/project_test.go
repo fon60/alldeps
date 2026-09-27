@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func writeProject(t *testing.T, root string, files ...string) {

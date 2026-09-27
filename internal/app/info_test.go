@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"npmitude/internal/domain"
-	"npmitude/internal/ecosystem"
+	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func ptr[T any](v T) *T { return &v }

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"npmitude/internal/domain"
+	"github.com/fon60/alldeps/internal/domain"
 )
 
 // ParsePin normalizes a .nvmrc pin: trims whitespace, strips one leading "v",

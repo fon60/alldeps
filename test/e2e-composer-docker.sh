@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end pty session test for the composer adapter's PHP-version-dependent
 # behavior (platform-mismatch conflict). Per project convention, PHP-version
-# tests run in docker: npmitude runs INSIDE a pinned php:8.1-cli container
+# tests run in docker: alldeps runs INSIDE a pinned php:8.1-cli container
 # (the host composer phar runs on the container's PHP), so the solver's
 # platform verdict is deterministic against 8.1 instead of the host's PHP.
 # Flow: fixture project with one installed dep -> search symfony/console
@@ -12,9 +12,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-[ -x ./npmitude ] || ./build.sh
+[ -x ./alldeps ] || ./build.sh
 
-BASE=$(mktemp -d "${TMPDIR:-/tmp}/npmitude-composer-docker.XXXXXX")
+BASE=$(mktemp -d "${TMPDIR:-/tmp}/alldeps-composer-docker.XXXXXX")
 PROJ="$BASE/proj"
 mkdir -p "$PROJ"
 printf '{"name":"probe/composer","require":{}}\n' > "$PROJ/composer.json"
@@ -57,9 +57,9 @@ p() { /usr/bin/printf "$@" 2>/dev/null || true; }
   sleep 1
 } | docker run --rm -i \
     -v "$BASE:/w" -w /w/proj \
-    -v "$(pwd)/npmitude":/usr/local/bin/npmitude:ro \
+    -v "$(pwd)/alldeps":/usr/local/bin/alldeps:ro \
     -v /usr/local/bin/composer:/usr/local/bin/composer:ro \
-    php:8.1-cli bash -c 'script -qec "stty cols 80 rows 24; /usr/local/bin/npmitude ." /dev/null' > "$OUT" 2>&1
+    php:8.1-cli bash -c 'script -qec "stty cols 80 rows 24; /usr/local/bin/alldeps ." /dev/null' > "$OUT" 2>&1
 
 sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$OUT" | tr -d '\r' > "$BASE/clean.txt"
 

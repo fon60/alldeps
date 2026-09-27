@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"npmitude/internal/registry"
-	"npmitude/internal/sizes"
+	"github.com/fon60/alldeps/internal/registry"
+	"github.com/fon60/alldeps/internal/sizes"
 )
 
 // ParsedPkg is one package of the installed tree as reported by npm ls: a
