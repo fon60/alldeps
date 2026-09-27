@@ -1,0 +1,29 @@
+version: 2
+project_name: alldeps
+
+builds:
+  - id: alldeps
+    main: .
+    binary: alldeps
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X 'github.com/fon60/alldeps/internal/app.Version={{.Version}}'
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+
+checksum:
+  name_template: "SHA256SUMS"
+
+changelog:
+  sort: asc

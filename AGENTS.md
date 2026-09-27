@@ -7,6 +7,7 @@
 ## Setup Commands
 
 - Build: `./build.sh` → static binary at repo root `./alldeps` (CGO_ENABLED=0, -trimpath, stripped)
+- Release (local, from a tag): `goreleaser release --clean --skip-publish` → artifacts in `dist/`, then `gh release create v<ver> --title "alldeps v<ver>" --notes-file dist/alldeps_<ver>_CHANGELOG.md dist/*.tar.gz dist/SHA256SUMS`. Test first with `goreleaser release --clean --skip-publish --snapshot` (no tag needed, nothing published). Version is injected from the tag via `.goreleaser.yml` ldflags.
 - Test all: `go test ./...`
 - Test one package: `go test ./internal/domain/`
 - Run: `./alldeps` (rebuild with `./build.sh` first — a stale binary causes confusing "changes not visible" bugs)

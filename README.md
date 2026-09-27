@@ -23,6 +23,22 @@ An aptitude-style terminal UI for global packages across npm, pnpm, yarn, compos
 
 Run with no arguments for **global mode** (everything installed on the machine), or point it at a directory (`alldeps .`) for **project mode**, where it auto-detects which managers apply to that project.
 
+## Install
+
+From the [releases page](https://github.com/fon60/alldeps/releases) — pick the tarball for your platform, unpack it and put `alldeps` on your `PATH`:
+
+```sh
+curl -fsSL -o alldeps.tar.gz \
+  https://github.com/fon60/alldeps/releases/download/v0.1.0/alldeps_0.1.0_linux_amd64.tar.gz
+tar xzf alldeps.tar.gz && sudo install alldeps /usr/local/bin/
+```
+
+Or, if you have Go 1.27+ installed:
+
+```sh
+go install github.com/fon60/alldeps@latest
+```
+
 ## Build
 
 ```sh
