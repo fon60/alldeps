@@ -132,10 +132,10 @@ func TestGroupByNameAutomaticSlot(t *testing.T) {
 
 func TestSortByStateIgnoresAutoAndActionSlots(t *testing.T) {
 	rows := []*PkgState{
-		{Name: "a1", InstalledVersion: "1.0.0", Automatic: true},                     // iA
-		{Name: "a2", InstalledVersion: "1.0.0"},                                      // i
-		{Name: "a3", Marks: map[string]MarkEntry{"npm": {Mark: MarkRemove}}},         // p -
-		{Name: "a4", InstalledVersion: "1.0.0", Unhealthy: true, Automatic: true},    // bA
+		{Name: "a1", InstalledVersion: "1.0.0", Automatic: true},                  // iA
+		{Name: "a2", InstalledVersion: "1.0.0"},                                   // i
+		{Name: "a3", Marks: map[string]MarkEntry{"npm": {Mark: MarkRemove}}},      // p -
+		{Name: "a4", InstalledVersion: "1.0.0", Unhealthy: true, Automatic: true}, // bA
 	}
 	SortRows(rows, SortState)
 	got := sortedNames(rows)

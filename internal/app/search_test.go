@@ -104,7 +104,7 @@ func TestClearSearchRestoresInstalledList(t *testing.T) {
 	if _, ok := ps.Packages["gamma"]; ok {
 		t.Fatal("unmarked search row must be dropped on close")
 	}
-	if d := ps.Packages["delta"]; d == nil || d .MarkFor("stub") != domain.MarkInstall {
+	if d := ps.Packages["delta"]; d == nil || d.MarkFor("stub") != domain.MarkInstall {
 		t.Fatalf("marked search row must survive the close: %+v", d)
 	}
 	rows := m.visibleRows()
@@ -163,7 +163,7 @@ func TestSearchReplacesUnmarkedKeepsMarked(t *testing.T) {
 	if _, ok := ps.Packages["foo-old"]; ok {
 		t.Fatal("unmarked search row should be replaced by the new search")
 	}
-	if got := ps.Packages["foo-marked"]; got == nil || got .MarkFor("stub") != domain.MarkInstall {
+	if got := ps.Packages["foo-marked"]; got == nil || got.MarkFor("stub") != domain.MarkInstall {
 		t.Fatalf("marked search row must survive: %+v", got)
 	}
 	if _, ok := ps.Packages["bar-new"]; !ok {
@@ -184,7 +184,7 @@ func TestSearchFailureLeavesStateUntouched(t *testing.T) {
 	if len(m.state.Prefixes["/p"].Packages) != before {
 		t.Fatal("rows changed after failed search")
 	}
-	if m.state.Prefixes["/p"].Packages["alpha"] .MarkFor("stub") != domain.MarkRemove {
+	if m.state.Prefixes["/p"].Packages["alpha"].MarkFor("stub") != domain.MarkRemove {
 		t.Fatal("mark lost after failed search")
 	}
 	if m.state.FilterText != "~i" {

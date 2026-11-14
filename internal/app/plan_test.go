@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fon60/alldeps/internal/ecosystem"
 	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 	"github.com/fon60/alldeps/internal/lock"
 )
 
@@ -76,7 +76,10 @@ func TestPlanGroupsAcrossDestinations(t *testing.T) {
 	if len(groups) != 2 {
 		t.Fatalf("groups = %d, want 2 (one per destination)", len(groups))
 	}
-	want := []struct{ dest, manager string; n int }{
+	want := []struct {
+		dest, manager string
+		n             int
+	}{
 		{"/p1", "stub", 1}, {"/p2", "stub", 1},
 	}
 	for i, g := range groups {

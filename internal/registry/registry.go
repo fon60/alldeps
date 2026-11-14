@@ -6,6 +6,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,10 +77,12 @@ func (c *Client) LatestVersion(ctx context.Context, name string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return "", err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return "", rerr
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("registry: %s for %s", resp.Status, name)
@@ -150,10 +153,12 @@ func (c *Client) UnpackedSize(ctx context.Context, name, version string) (int64,
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return 0, err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return 0, rerr
 	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("registry: %s for %s", resp.Status, name)
@@ -223,10 +228,12 @@ func (c *Client) GetDoc(ctx context.Context, name string) (*Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return nil, err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return nil, rerr
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("registry: %s for %s", resp.Status, name)
@@ -369,10 +376,12 @@ func (c *Client) Search(ctx context.Context, text string, size, from int) ([]Sea
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, 0, err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return nil, 0, rerr
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("registry search: %s", resp.Status)

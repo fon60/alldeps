@@ -6,8 +6,11 @@
 
 ## Setup Commands
 
-- Build: `./build.sh` → static binary at repo root `./alldeps` (CGO_ENABLED=0, -trimpath, stripped)
-- Release: follow `docs/release.md` end-to-end — snapshot dry-run → tag → build → push → `gh release create` → verify (on this machine it is also exposed as the `release` skill under `.opencode/skills/`, which just points at that doc). Never cut a release from memory; the doc encodes the exact flags, verification steps and gotchas.
+- Build: `./build.sh` → static binary at repo root `./alldeps` (CGO_ENABLED=0, -trimpath, stripped); runs the lint gate first — any finding means non-zero exit and no binary
+- Lint: `./lint.sh` → `go vet ./...` + golangci-lint v2 (default linters + gofmt formatter), standalone gate check
+- Vuln: `./vuln.sh` → govulncheck reachability scan (source mode, module graph + stdlib); mandatory pre-release step in docs/release.md
+- Lint/Vuln tooling resolves to @latest at run time via `go run pkg@latest` — no version pins anywhere in the repo; after a Go toolchain upgrade refresh the interactive binaries with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` and `go install honnef.co/go/tools/cmd/staticcheck@latest`
+- Release: follow `docs/release.md` end-to-end — vuln scan → snapshot dry-run → tag → build → push → `gh release create` → verify (on this machine it is also exposed as the `release` skill under `.opencode/skills/`, which just points at that doc). Never cut a release from memory; the doc encodes the exact flags, verification steps and gotchas.
 - Test all: `go test ./...`
 - Test one package: `go test ./internal/domain/`
 - Run: `./alldeps` (rebuild with `./build.sh` first — a stale binary causes confusing "changes not visible" bugs)

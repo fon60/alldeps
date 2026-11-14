@@ -23,7 +23,7 @@ const (
 )
 
 // errNoComposer is the load-failure reported when no composer binary is on PATH.
-var errNoComposer = errors.New(`Composer toolchain required: "composer" not found on PATH`)
+var errNoComposer = errors.New(`composer toolchain required: "composer" not found on PATH`)
 
 // Ecosystem is the composer adapter, bound to one Composer project directory
 // (project scope only).
@@ -320,7 +320,7 @@ type lockHandle struct {
 	envID string
 }
 
-func (h *lockHandle) Release() { h.mgr.Release(h.envID) }
+func (h *lockHandle) Release() error { return h.mgr.Release(h.envID) }
 
 // Lock acquires the environment lock. Composer has no native lock of its own
 // (composer.lock is data, not a mutex), so this always takes the session-

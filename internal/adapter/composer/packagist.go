@@ -8,6 +8,7 @@ package composer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,10 +91,12 @@ func (p *Packagist) Search(ctx context.Context, query string, size, from int) ([
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, 0, err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return nil, 0, rerr
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("packagist search: %s", resp.Status)
@@ -127,10 +130,12 @@ func (p *Packagist) Metadata(ctx context.Context, name string) ([]PkgVersion, er
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return nil, err
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if cerr := resp.Body.Close(); cerr != nil {
+		rerr = errors.Join(rerr, cerr)
+	}
+	if rerr != nil {
+		return nil, rerr
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("packagist: package %s not found", name)

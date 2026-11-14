@@ -37,10 +37,10 @@ func TestListInstalledFullBuildListWithResolvedVersions(t *testing.T) {
 		version   string
 		automatic bool
 	}{
-		"github.com/direct/alpha":    {"v1.2.0", false},
-		"github.com/direct/beta":     {"v0.3.1", false},
-		"golang.org/x/indirect":      {"v0.4.0", true},
-		"github.com/other/gamma":     {"v2.0.0", true},
+		"github.com/direct/alpha": {"v1.2.0", false},
+		"github.com/direct/beta":  {"v0.3.1", false},
+		"golang.org/x/indirect":   {"v0.4.0", true},
+		"github.com/other/gamma":  {"v2.0.0", true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d packages %v, want exactly %d (indirect listed, main excluded)", len(got), got, len(want))

@@ -23,7 +23,15 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
 
    Commit or stash all pending changes (`git status`). Local artifacts that must never be committed belong in `.gitignore` (currently: `dist/`, `skills-lock.json`) — ignore them, don't commit them.
 
-2. **Snapshot dry-run (always, before tagging)**
+2. **Vulnerability scan (mandatory, before the snapshot dry-run)**
+
+   ```bash
+   ./vuln.sh
+   ```
+
+   govulncheck in source mode: reachability-based CVE scan of the module graph and stdlib. "No vulnerabilities found" → continue. A known reachable vulnerability blocks the release until the vulnerable dependency is updated (re-run `./vuln.sh` to confirm clean) or the risk is explicitly accepted by the user — record any such acceptance in the release notes.
+
+3. **Snapshot dry-run (always, before tagging)**
 
    ```bash
    goreleaser release --clean --snapshot
@@ -37,7 +45,7 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
      ```
    - Cross-compile errors (e.g. darwin `syscall.Stat_t` field widths) only surface here — fix them and re-run before tagging.
 
-3. **Tag**
+4. **Tag**
 
    ```bash
    git tag v<ver>        # semver with v prefix, e.g. v0.2.0
@@ -45,7 +53,7 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
 
    If the tree changes after tagging, re-point: `git tag -f v<ver>`. Do NOT hand-edit the `Version` var in `internal/app/model.go` — it is only the dev-build fallback; the release version is injected from the tag via `.goreleaser.yml` ldflags.
 
-4. **Build release artifacts**
+5. **Build release artifacts**
 
    ```bash
    goreleaser release --clean --skip=publish
@@ -53,7 +61,7 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
 
    Produces `dist/alldeps_<ver>_{linux,darwin}_{amd64,arm64}.tar.gz`, `dist/SHA256SUMS` and the changelog (check `ls dist/` for its exact name — currently `dist/CHANGELOG.md`).
 
-5. **Push branch + tag**
+6. **Push branch + tag**
 
    ```bash
    git push origin main v<ver>
@@ -61,7 +69,7 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
 
    `gh release create` refuses to run until the tag exists on the remote.
 
-6. **Create the GitHub release**
+7. **Create the GitHub release**
 
    ```bash
    gh release create v<ver> --title "alldeps v<ver>" \
@@ -71,14 +79,14 @@ Publish a tagged release of alldeps: cross-compiled binaries (linux/darwin × am
      dist/SHA256SUMS
    ```
 
-7. **Verify**
+8. **Verify**
 
    ```bash
    gh release view v<ver> --json assets       # expect 5 assets
    go list -m github.com/fon60/alldeps@latest # must resolve to v<ver> (unlocks go install)
    ```
 
-8. **Post-release housekeeping (only if the version in docs went stale)**
+9. **Post-release housekeeping (only if the version in docs went stale)**
 
    The README Install section pins a concrete download URL (currently v0.1.0). Bump it to the new version and commit.
 

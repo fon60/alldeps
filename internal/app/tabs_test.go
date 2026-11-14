@@ -20,7 +20,7 @@ func TestOpenTabAppendsAndActivates(t *testing.T) {
 
 func TestOpenTabDedupesAnywhereInStrip(t *testing.T) {
 	m := modelWithLoadedPrefix(t, "/p", "alpha")
-	m.openTab(TabInfo, "alpha")    // idx 1
+	m.openTab(TabInfo, "alpha")     // idx 1
 	m.openTab(TabVersions, "alpha") // idx 2
 
 	// Re-opening the info tab from a non-adjacent position focuses the

@@ -28,7 +28,9 @@ func TestAcquireRelease(t *testing.T) {
 	if !m.IsHeld("/p") {
 		t.Fatal("IsHeld should be true for our own lock")
 	}
-	m.Release("/p")
+	if err := m.Release("/p"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(dir, ID("/p")+".lock")); !os.IsNotExist(err) {
 		t.Fatal("lock file should be removed on release")
 	}
@@ -110,7 +112,9 @@ func TestAcquireIdempotent(t *testing.T) {
 	if err := m.Acquire("/p"); err != nil {
 		t.Fatalf("second acquire: %v", err)
 	}
-	m.ReleaseAll()
+	if err := m.ReleaseAll(); err != nil {
+		t.Fatalf("release all: %v", err)
+	}
 	if len(m.held) != 0 {
 		t.Fatal("ReleaseAll should drop every held lock")
 	}

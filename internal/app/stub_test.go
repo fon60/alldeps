@@ -112,11 +112,14 @@ func (s *stubEco) Execute(ctx context.Context, env ecosystem.Environment, batch 
 }
 
 type stubLock struct {
-	owner  *stubEco
-	envID  string
+	owner *stubEco
+	envID string
 }
 
-func (l stubLock) Release() { l.owner.released = append(l.owner.released, l.envID) }
+func (l stubLock) Release() error {
+	l.owner.released = append(l.owner.released, l.envID)
+	return nil
+}
 
 func (s *stubEco) Lock(env ecosystem.Environment) (ecosystem.LockHandle, error) {
 	s.lockCalls = append(s.lockCalls, env.ID)

@@ -151,7 +151,7 @@ type Model struct {
 	planSizes   map[string]int64 // name -> unpacked size shown in the plan tab
 	resolvedSig string           // plan signature the conflict state was last resolved for
 
-	applyBatches  []applyBatch     // queued (destination, manager) batches for the running apply
+	applyBatches  []applyBatch // queued (destination, manager) batches for the running apply
 	applyBatchIdx int
 	applyDests    []string          // every destination the running apply touches, in order
 	applyLocks    []string          // destinations locked at apply start, released after it
@@ -415,7 +415,11 @@ func (m Model) lockedEnvs() map[string]bool {
 
 func (m *Model) releaseAll() {
 	if m.locks != nil {
-		m.locks.ReleaseAll()
+		// The TUI tears down right after these call sites, so stderr is the
+		// only channel left to surface a failed cleanup.
+		if err := m.locks.ReleaseAll(); err != nil {
+			fmt.Fprintln(os.Stderr, "alldeps: failed to release lock:", err)
+		}
 	}
 }
 
@@ -597,8 +601,9 @@ func (m *Model) switchEnv(id string) tea.Cmd {
 	}
 	old := m.state.ActivePrefixID
 	m.state.ActivePrefixID = id
+	var releaseErr error
 	if m.locks != nil && old != "" {
-		m.locks.Release(old)
+		releaseErr = m.locks.Release(old)
 	}
 	if _, ok := m.state.Prefixes[id]; !ok {
 		m.state.Prefixes[id] = &domain.PrefixState{ID: id, Packages: map[string]*domain.PkgState{}}
@@ -606,6 +611,9 @@ func (m *Model) switchEnv(id string) tea.Cmd {
 	m.tabs[0].Cursor = 0
 	m.tabs[0].ListTop = 0
 	m.notice = ""
+	if releaseErr != nil {
+		m.notice = fmt.Sprintf("failed to release lock for %s: %v", old, releaseErr)
+	}
 	m.closeSearchTabs() // results referenced the previous environment's rows
 	ps := m.state.Prefixes[id]
 	if ps.Loaded {
@@ -1158,10 +1166,7 @@ func (m Model) dedupeConflictFor(managerID, dest, name string) *ecosystem.Confli
 // resolution pick suppresses the cell until the cell's marks change.
 func (m Model) cellConflicted(dest, name string) bool {
 	ps := m.state.Prefixes[dest]
-	stored := false
-	if ps != nil && len(ps.UnresolvedConflicts(name)) > 0 {
-		stored = true
-	}
+	stored := ps != nil && len(ps.UnresolvedConflicts(name)) > 0
 	derived := false
 	for _, id := range m.managerIDs() {
 		if m.dedupeConflictFor(id, dest, name) != nil {
@@ -1710,7 +1715,9 @@ func (m Model) startApply() (Model, tea.Cmd) {
 			wasHeld = m.locks.IsHeld(d)
 			if err := m.locks.Acquire(d); err != nil {
 				for _, n := range newly {
-					m.locks.Release(n)
+					if rerr := m.locks.Release(n); rerr != nil {
+						err = errors.Join(err, fmt.Errorf("release %s: %w", n, rerr))
+					}
 				}
 				m.notice = heldNotice(d, err)
 				return m, nil
@@ -1729,10 +1736,7 @@ func (m Model) startApply() (Model, tea.Cmd) {
 	m.applyFromTab = m.tabIdx
 	m.applyDone = false
 	m.applyAborted = false
-	m.applyLog = nil
-	for _, s := range conflictSkips {
-		m.applyLog = append(m.applyLog, s)
-	}
+	m.applyLog = append([]string(nil), conflictSkips...)
 	for _, g := range m.planGroups() {
 		if g.invalid {
 			m.applyLog = append(m.applyLog, "skipped "+displayPath(g.dest)+" — destination is marked under two managers; clear one manager's marks there to run it")

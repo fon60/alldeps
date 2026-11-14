@@ -94,7 +94,9 @@ func TestSearchAgainstRegistryStub(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		fmt.Fprint(w, `{"objects":[{"package":{"name":"pad-left","version":"2.3.0","description":"Pads a string with zeros (left)"}}],"total":1}`)
+		if _, err := fmt.Fprint(w, `{"objects":[{"package":{"name":"pad-left","version":"2.3.0","description":"Pads a string with zeros (left)"}}],"total":1}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -208,7 +210,9 @@ func TestLockFallsBackToSessionLock(t *testing.T) {
 	if !lm.IsHeld("/p") {
 		t.Fatal("Lock must take the session-lock fallback path for npm")
 	}
-	h.Release()
+	if err := h.Release(); err != nil {
+		t.Fatal(err)
+	}
 	if lm.IsHeld("/p") {
 		t.Fatal("Release must drop the session lock")
 	}

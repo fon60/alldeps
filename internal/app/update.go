@@ -281,7 +281,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for _, d := range m.applyLocks {
 			if m.locks != nil {
-				m.locks.Release(d)
+				if err := m.locks.Release(d); err != nil {
+					m.notice = fmt.Sprintf("failed to release lock for %s: %v", d, err)
+				}
 			}
 		}
 		m.applyLocks = nil
@@ -595,7 +597,9 @@ func (m Model) updateManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeManagerID = id
 			if m.isProject() && m.locks != nil {
 				for _, e := range m.envsByManager[old] {
-					m.locks.Release(e.ID)
+					if err := m.locks.Release(e.ID); err != nil {
+						m.notice = fmt.Sprintf("failed to release lock for %s: %v", e.ID, err)
+					}
 				}
 			}
 			m.overlay = OverlayNone

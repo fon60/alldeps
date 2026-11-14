@@ -4,6 +4,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+./lint.sh
+
 out="./alldeps"
 echo "building ${out} ..."
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "${out}" .

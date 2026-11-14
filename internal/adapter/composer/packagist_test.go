@@ -20,12 +20,16 @@ func testPackagist(t *testing.T, searchJSON, metaJSON string) (*Packagist, *int3
 	mux := http.NewServeMux()
 	mux.HandleFunc("/search.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, searchJSON)
+		if _, err := fmt.Fprint(w, searchJSON); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	})
 	mux.HandleFunc("/p2/", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&metaHits, 1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, metaJSON)
+		if _, err := fmt.Fprint(w, metaJSON); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -69,7 +73,9 @@ func searchURLCapturing(t *testing.T, out *string) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*out = r.URL.String()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"results":[],"total":0}`)
+		if _, err := fmt.Fprint(w, `{"results":[],"total":0}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -171,7 +177,9 @@ func TestPackagistLatestForCountsFailures(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/p2/ok/pkg.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"packages":{"ok/pkg":[{"name":"ok/pkg","version":"1.2.3"}]}}`)
+		if _, err := fmt.Fprint(w, `{"packages":{"ok/pkg":[{"name":"ok/pkg","version":"1.2.3"}]}}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	})
 	mux.HandleFunc("/p2/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

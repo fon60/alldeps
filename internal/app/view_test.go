@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/fon60/alldeps/internal/filter"
 	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/filter"
 )
 
 func TestMain(m *testing.M) {

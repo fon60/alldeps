@@ -124,7 +124,7 @@ func TestClassifySolverFailures(t *testing.T) {
 		wantMsgPart string
 	}{
 		{
-			name: "platform mismatch pins last compatible release line and offers skip",
+			name:    "platform mismatch pins last compatible release line and offers skip",
 			fixture: recordedPlatformMismatch,
 			metaJSON: `{"packages":{"symfony/console":[
 				{"name":"symfony/console","version":"8.1.7","require":{"php":">=8.4.1"}},
@@ -141,7 +141,7 @@ func TestClassifySolverFailures(t *testing.T) {
 			wantMsgPart: "does not satisfy that requirement",
 		},
 		{
-			name: "a pinned latest version that mismatches the platform still classifies as platform, not root-clash",
+			name:    "a pinned latest version that mismatches the platform still classifies as platform, not root-clash",
 			fixture: recordedPinnedPlatformMismatch,
 			metaJSON: `{"packages":{"symfony/console":[
 				{"name":"symfony/console","version":"8.1.7","require":{"php":">=8.4.1"}},
@@ -158,12 +158,12 @@ func TestClassifySolverFailures(t *testing.T) {
 			wantMsgPart: "does not satisfy that requirement",
 		},
 		{
-			name:        "root-dep clash pins candidates, offers removing the clashing root dep and skip",
-			fixture:     recordedRootClash,
-			searchJSON:  `{}`,
-			metaJSON:    `{}`,
-			items:       []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "symfony/framework-bundle", Version: "^6.4"}},
-			wantPkg:     "symfony/framework-bundle",
+			name:       "root-dep clash pins candidates, offers removing the clashing root dep and skip",
+			fixture:    recordedRootClash,
+			searchJSON: `{}`,
+			metaJSON:   `{}`,
+			items:      []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "symfony/framework-bundle", Version: "^6.4"}},
+			wantPkg:    "symfony/framework-bundle",
 			wantEffects: []ecosystem.ResolutionEffect{
 				{Kind: "install", Name: "symfony/framework-bundle", TargetVersion: "v6.4.46"},
 				{Kind: "install", Name: "symfony/http-kernel", TargetVersion: "^6.4"},
@@ -173,12 +173,12 @@ func TestClassifySolverFailures(t *testing.T) {
 			wantMsgPart: "conflicts with your root composer.json require",
 		},
 		{
-			name:        "impossible constraint pins the best named candidate and offers skip",
-			fixture:     recordedImpossibleConstraint,
-			searchJSON:  `{}`,
-			metaJSON:    `{}`,
-			items:       []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "psr/log", Version: "^99"}},
-			wantPkg:     "psr/log",
+			name:       "impossible constraint pins the best named candidate and offers skip",
+			fixture:    recordedImpossibleConstraint,
+			searchJSON: `{}`,
+			metaJSON:   `{}`,
+			items:      []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "psr/log", Version: "^99"}},
+			wantPkg:    "psr/log",
 			wantEffects: []ecosystem.ResolutionEffect{
 				{Kind: "install", Name: "psr/log", TargetVersion: "3.0.2"},
 				{Kind: "skip", Name: "psr/log"},
@@ -186,12 +186,12 @@ func TestClassifySolverFailures(t *testing.T) {
 			wantMsgPart: "does not match the constraint",
 		},
 		{
-			name:        "not found offers the corrected Packagist name and skip",
-			fixture:     recordedNotFound,
-			searchJSON:  `{"results":[{"name":"totally/existent","description":"the real one"}],"total":1}`,
-			metaJSON:    `{}`,
-			items:       []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "totally/nonexistent-xyz123"}},
-			wantPkg:     "totally/nonexistent-xyz123",
+			name:       "not found offers the corrected Packagist name and skip",
+			fixture:    recordedNotFound,
+			searchJSON: `{"results":[{"name":"totally/existent","description":"the real one"}],"total":1}`,
+			metaJSON:   `{}`,
+			items:      []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "totally/nonexistent-xyz123"}},
+			wantPkg:    "totally/nonexistent-xyz123",
 			wantEffects: []ecosystem.ResolutionEffect{
 				{Kind: "install", Name: "totally/existent"},
 				{Kind: "skip", Name: "totally/nonexistent-xyz123"},
@@ -199,12 +199,12 @@ func TestClassifySolverFailures(t *testing.T) {
 			wantMsgPart: "could not be found",
 		},
 		{
-			name:        "unrecognized problem degrades to the fallback with raw text and generic options",
-			fixture:     recordedUnrecognized,
-			searchJSON:  `{}`,
-			metaJSON:    `{}`,
-			items:       []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "foo/bar", Version: "^1.0"}},
-			wantPkg:     "foo/bar",
+			name:       "unrecognized problem degrades to the fallback with raw text and generic options",
+			fixture:    recordedUnrecognized,
+			searchJSON: `{}`,
+			metaJSON:   `{}`,
+			items:      []ecosystem.MarkedItem{{Op: ecosystem.OpInstall, Name: "foo/bar", Version: "^1.0"}},
+			wantPkg:    "foo/bar",
 			wantEffects: []ecosystem.ResolutionEffect{
 				{},
 				{Kind: "skip", Name: "foo/bar"},

@@ -37,17 +37,17 @@ func TestMatchPin(t *testing.T) {
 	}{
 		{"20.19.1", "v20.19.1"}, // full pin: exact match only
 		{"v20.3.0", "v20.3.0"},
-		{"22", "v22.15.0"},      // partial: highest installed with the dot-prefix
-		{"20", "v20.19.1"},      // 20.19.1 > 20.3.0
+		{"22", "v22.15.0"}, // partial: highest installed with the dot-prefix
+		{"20", "v20.19.1"}, // 20.19.1 > 20.3.0
 		{"20.3", "v20.3.0"},
 		{"22.15", "v22.15.0"},
-		{"24", ""},              // unmatched
-		{"20.99", ""},           // unmatched
-		{"20.1", ""},            // no 20.1.x installed
-		{"20.19.2", ""},         // full pin, not the exact installed version
-		{"lts/*", ""},           // unparseable alias
-		{"node", ""},            // unparseable alias
-		{"", ""},                // empty
+		{"24", ""},      // unmatched
+		{"20.99", ""},   // unmatched
+		{"20.1", ""},    // no 20.1.x installed
+		{"20.19.2", ""}, // full pin, not the exact installed version
+		{"lts/*", ""},   // unparseable alias
+		{"node", ""},    // unparseable alias
+		{"", ""},        // empty
 	}
 	for _, tc := range cases {
 		if got := MatchPin(tc.pin, versions); got != tc.want {

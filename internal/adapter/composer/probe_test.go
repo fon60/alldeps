@@ -69,7 +69,7 @@ func TestResolveDryRunSuccessYieldsPlanWithoutConflicts(t *testing.T) {
 	root := t.TempDir()
 
 	plan, conflicts, err := NewProject(root).Resolve(ecosystem.Intent{
-		Env:   ecosystem.Environment{ID: root},
+		Env: ecosystem.Environment{ID: root},
 		Items: []ecosystem.MarkedItem{
 			{Op: ecosystem.OpInstall, Name: "foo/bar", Version: "^1.0"},
 			{Op: ecosystem.OpRemove, Name: "baz/qux"},

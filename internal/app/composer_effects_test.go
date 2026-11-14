@@ -49,9 +49,9 @@ func composerStubModel(t *testing.T) (Model, *stubEco) {
 	m := New(s)
 	m.locks = lock.New(filepath.Join(t.TempDir(), "locks"))
 	m.state.Prefixes["/p"] = &domain.PrefixState{ID: "/p", Loaded: true, Packages: map[string]*domain.PkgState{
-		"console":    {Name: "console", Origin: domain.OriginSearch, LatestVersion: "8.1.7"},
+		"console":     {Name: "console", Origin: domain.OriginSearch, LatestVersion: "8.1.7"},
 		"http-kernel": {Name: "http-kernel", InstalledVersion: "7.0.3", Origin: domain.OriginInstalled},
-		"kernel":     {Name: "kernel", InstalledVersion: "7.0.0", Origin: domain.OriginInstalled},
+		"kernel":      {Name: "kernel", InstalledVersion: "7.0.0", Origin: domain.OriginInstalled},
 	}}
 	m.state.ActivePrefixID = "/p"
 	m.envsByManager["stub"] = []ecosystem.Environment{{ID: "/p"}}
@@ -70,10 +70,10 @@ func composerStubModel(t *testing.T) (Model, *stubEco) {
 // settled state.
 func TestComposerEffectsFlowThroughResolverLoop(t *testing.T) {
 	tests := []struct {
-		name     string
-		cursor   int
-		reprobe  bool // false when the choice empties the plan (conflicts clear inline, no probe)
-		check    func(t *testing.T, m Model)
+		name    string
+		cursor  int
+		reprobe bool // false when the choice empties the plan (conflicts clear inline, no probe)
+		check   func(t *testing.T, m Model)
 	}{
 		{
 			name:    "install pin retargets the mark",

@@ -161,7 +161,7 @@ type Doc struct {
 
 // LockHandle is a held environment lock.
 type LockHandle interface {
-	Release()
+	Release() error
 }
 
 // Ecosystem is the adapter port: discover destinations, list what is

@@ -65,8 +65,8 @@ func TestListInstalledFullSetWithExactVersions(t *testing.T) {
 		version   string
 		automatic bool
 	}{
-		"psr/log":          {"3.0.2", false},
-		"vendor/alpha":     {"1.2.3", false},
+		"psr/log":           {"3.0.2", false},
+		"vendor/alpha":      {"1.2.3", false},
 		"vendor/transitive": {"2.0.0", true},
 	}
 	if len(got) != len(want) {

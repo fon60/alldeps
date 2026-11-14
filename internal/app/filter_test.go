@@ -36,7 +36,7 @@ func (m Model) step(t *testing.T, msg tea.Msg) Model {
 }
 
 func typeRunes(m Model, t *testing.T, s string) Model {
-	for _, r := range []rune(s) {
+	for _, r := range s {
 		m = m.step(t, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	return m

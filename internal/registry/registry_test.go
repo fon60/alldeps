@@ -28,11 +28,15 @@ func stubRegistry(t *testing.T, latest map[string]string) (*httptest.Server, *in
 		v, ok := latest[name]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"error":"not found"}`)
+			if _, err := fmt.Fprint(w, `{"error":"not found"}`); err != nil {
+				t.Errorf("stub write: %v", err)
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"name":%q,"dist-tags":{"latest":%q},"versions":{"%s":{"version":"%s"}}}`, name, v, v, v)
+		if _, err := fmt.Fprintf(w, `{"name":%q,"dist-tags":{"latest":%q},"versions":{"%s":{"version":"%s"}}}`, name, v, v, v); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &hits
@@ -134,7 +138,9 @@ func TestScopedPackageURL(t *testing.T) {
 	var wirePath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wirePath = r.URL.EscapedPath()
-		fmt.Fprint(w, `{"name":"@scope/pkg","dist-tags":{"latest":"1.0.0"},"versions":{}}`)
+		if _, err := fmt.Fprint(w, `{"name":"@scope/pkg","dist-tags":{"latest":"1.0.0"},"versions":{}}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	c := NewClient(srv.URL)
@@ -153,10 +159,12 @@ func TestSearch(t *testing.T) {
 			t.Errorf("unexpected request %q", r.URL.String())
 		}
 		gotFrom = r.URL.Query().Get("from")
-		fmt.Fprint(w, `{"objects":[
+		if _, err := fmt.Fprint(w, `{"objects":[
 			{"package":{"name":"foo","version":"1.0.0","description":"does foo"}},
 			{"package":{"name":"bar","version":"2.0.0","description":""}}
-		],"time":1,"total":42}`)
+		],"time":1,"total":42}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	c := NewClient(srv.URL)
@@ -188,7 +196,7 @@ func TestSearch(t *testing.T) {
 
 func TestGetDocNormalizes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{
+		if _, err := fmt.Fprint(w, `{
 			"name":"foo",
 			"description":"does foo",
 			"homepage":"https://foo.example",
@@ -201,7 +209,9 @@ func TestGetDocNormalizes(t *testing.T) {
 			"dist-tags":{"latest":"2.0.0"},
 			"versions":{"1.0.0":{},"2.0.0":{"dependencies":{"qux":"~3"},"peerDependencies":{"quux":">=1"},"bin":"run.js"}},
 			"readme":"# foo\nhello"
-		}`)
+		}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	c := NewClient(srv.URL)
@@ -234,14 +244,16 @@ func TestGetDocNormalizes(t *testing.T) {
 
 func TestGetDocParsesPerVersionUnpackedSizes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{
+		if _, err := fmt.Fprint(w, `{
 			"name":"sized",
 			"dist-tags":{"latest":"2.0.0"},
 			"versions":{
 				"1.0.0":{"dist":{"unpackedSize":1500}},
 				"2.0.0":{"dist":{"unpackedSize":48230}}
 			}
-		}`)
+		}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	doc, err := NewClient(srv.URL).GetDoc(context.Background(), "sized")
@@ -264,14 +276,16 @@ func TestGetDocParsesPerVersionUnpackedSizes(t *testing.T) {
 
 func TestGetDocOmitsVersionsWithoutUnpackedSize(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{
+		if _, err := fmt.Fprint(w, `{
 			"name":"partial",
 			"dist-tags":{"latest":"1.0.0"},
 			"versions":{
 				"1.0.0":{"dist":{"unpackedSize":100}},
 				"0.9.0":{}
 			}
-		}`)
+		}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	doc, err := NewClient(srv.URL).GetDoc(context.Background(), "partial")
@@ -288,14 +302,16 @@ func TestGetDocOmitsVersionsWithoutUnpackedSize(t *testing.T) {
 
 func TestGetDocStringForms(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{
+		if _, err := fmt.Fprint(w, `{
 			"name":"bar",
 			"repository":"https://bar.example/repo",
 			"license":"ISC",
 			"bin":{"a":"./a.js","b":"./b.js"},
 			"dist-tags":{"latest":"1.0.0"},
 			"versions":{"1.0.0":{"dependencies":{"dep-a":"^1"},"peerDependencies":{"peer-b":"*"}}}
-		}`)
+		}`); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	doc, err := NewClient(srv.URL).GetDoc(context.Background(), "bar")

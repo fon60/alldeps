@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fon60/alldeps/internal/ecosystem"
 	"github.com/fon60/alldeps/internal/domain"
+	"github.com/fon60/alldeps/internal/ecosystem"
 )
 
 func TestSwitchPrefixLoadsTarget(t *testing.T) {
@@ -37,7 +37,7 @@ func TestMarksSurviveRoundTrip(t *testing.T) {
 
 	m.switchEnv("/p/v24")
 	ps := m.state.Prefixes["/p/v24"]
-	if ps.Packages["alpha"] .MarkFor("stub") != domain.MarkRemove || ps.Packages["beta"] .MarkFor("stub") != domain.MarkInstall {
+	if ps.Packages["alpha"].MarkFor("stub") != domain.MarkRemove || ps.Packages["beta"].MarkFor("stub") != domain.MarkInstall {
 		t.Fatal("marks not intact after round trip")
 	}
 }

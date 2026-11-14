@@ -29,7 +29,7 @@ const (
 )
 
 // errNoGo is the load-failure reported when no go toolchain is on PATH.
-var errNoGo = errors.New(`Go toolchain required: "go" not found on PATH`)
+var errNoGo = errors.New(`go toolchain required: "go" not found on PATH`)
 
 // goModule is one line of `go list -m -f {{json}}` output; only the
 // long-stable documented fields are read.
@@ -329,7 +329,7 @@ type lockHandle struct {
 	envID string
 }
 
-func (h *lockHandle) Release() { h.mgr.Release(h.envID) }
+func (h *lockHandle) Release() error { return h.mgr.Release(h.envID) }
 
 // Lock acquires the environment lock. Go has no native lock of its own, so
 // this always takes the session-scoped fallback path.

@@ -93,11 +93,16 @@ func (m *Manager) Acquire(prefixID string) error {
 		if err == nil {
 			info := Info{Prefix: prefixID, PID: os.Getpid(), Start: m.start, Host: hostname()}
 			if _, werr := f.WriteString(formatInfo(info)); werr != nil {
-				f.Close()
-				os.Remove(path)
-				return werr
+				cerr := f.Close()
+				rerr := os.Remove(path)
+				return errors.Join(werr, cerr, rerr)
 			}
-			f.Close()
+			// A failed Close can mean the holder record never reached disk;
+			// drop the file so no corrupt lock is left behind.
+			if cerr := f.Close(); cerr != nil {
+				rerr := os.Remove(path)
+				return errors.Join(cerr, rerr)
+			}
 			m.held[id] = true
 			return nil
 		}
@@ -108,28 +113,38 @@ func (m *Manager) Acquire(prefixID string) error {
 		if perr == nil && m.liveness(existing) {
 			return &HeldError{Holder: existing}
 		}
-		os.Remove(path) // stale or unreadable: clear and retry
+		// stale or unreadable: clear and retry; a failed unlink is the real
+		// failure, not contention
+		if rerr := os.Remove(path); rerr != nil {
+			return rerr
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	return errors.New("could not acquire lock (contention)")
 }
 
-// Release drops our lock for prefixID. It is a no-op when we do not hold it.
-func (m *Manager) Release(prefixID string) {
+// Release drops our lock for prefixID. It is a no-op when we do not hold it;
+// a failed unlink is returned so the caller can surface it (a leftover file
+// would otherwise read back as held by this live process).
+func (m *Manager) Release(prefixID string) error {
 	id := ID(prefixID)
 	if !m.held[id] {
-		return
+		return nil
 	}
 	delete(m.held, id)
-	os.Remove(filepath.Join(m.dir, id+".lock"))
+	return os.Remove(filepath.Join(m.dir, id+".lock"))
 }
 
 // ReleaseAll drops every lock held by this instance (called on exit).
-func (m *Manager) ReleaseAll() {
+func (m *Manager) ReleaseAll() error {
+	var errs []error
 	for id := range m.held {
-		os.Remove(filepath.Join(m.dir, id+".lock"))
+		if err := os.Remove(filepath.Join(m.dir, id+".lock")); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	m.held = map[string]bool{}
+	return errors.Join(errs...)
 }
 
 // IsHeld reports whether prefixID is held by a live instance (ours or
@@ -145,10 +160,6 @@ func (m *Manager) IsHeld(prefixID string) bool {
 		return false
 	}
 	return m.liveness(info)
-}
-
-func (m *Manager) lockPath(prefixID string) string {
-	return filepath.Join(m.dir, ID(prefixID)+".lock")
 }
 
 func defaultLiveness(info Info) bool {

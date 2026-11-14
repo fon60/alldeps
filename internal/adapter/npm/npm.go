@@ -395,7 +395,7 @@ type lockHandle struct {
 	envID string
 }
 
-func (h *lockHandle) Release() { h.mgr.Release(h.envID) }
+func (h *lockHandle) Release() error { return h.mgr.Release(h.envID) }
 
 // Lock acquires the environment lock. npm has no global lock of its own, so
 // this always takes the session-scoped fallback path.

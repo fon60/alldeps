@@ -145,7 +145,7 @@ func (m Model) tabStripLine() string {
 		// Phase B: even one-column labels overflow — drop the edge farthest from
 		// the active tab until the window fits, then re-expand the labels.
 		for widthOf(start, end, 1) > avail && end-start > 0 {
-			if (m.tabIdx-start) >= (end-m.tabIdx) {
+			if (m.tabIdx - start) >= (end - m.tabIdx) {
 				start++
 			} else {
 				end--
@@ -1315,18 +1315,18 @@ var (
 	tabStripActive = lipgloss.NewStyle().Background(lipgloss.Color("29")).Bold(true).Foreground(lipgloss.Color("231"))
 	tabStripIdle   = lipgloss.NewStyle().Background(primaryColor).Foreground(lipgloss.Color("245"))
 
-	headerStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
-	flagStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	cursorFlagStyle   = flagStyle.Reverse(true)
-	conflictStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
+	headerStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
+	flagStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	cursorFlagStyle     = flagStyle.Reverse(true)
+	conflictStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
 	conflictCursorStyle = conflictStyle.Reverse(true)
-	nameStyle         = lipgloss.NewStyle().Bold(true)
-	cursorStyle       = lipgloss.NewStyle().Reverse(true)
-	cursorSourceStyle = sourceStyle.Reverse(true)
-	noticeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	statusStyle       = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252"))
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	sourceStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	sectionStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
-	hintStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	nameStyle           = lipgloss.NewStyle().Bold(true)
+	cursorStyle         = lipgloss.NewStyle().Reverse(true)
+	cursorSourceStyle   = sourceStyle.Reverse(true)
+	noticeStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	statusStyle         = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252"))
+	titleStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	sourceStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	sectionStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
+	hintStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
